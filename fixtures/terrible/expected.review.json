@@ -1,0 +1,1 @@
+{"risk":"critical","findings":[{"ruleId":"go-security.tls-verification","severity":"critical","evidenceCount":1},{"ruleId":"go-security.secret-logging","severity":"high","evidenceCount":1},{"ruleId":"go-security.jwt-validation","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
