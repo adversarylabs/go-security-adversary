@@ -210,3 +210,25 @@ func save(path string, key []byte) error {
   // credential file mode may or may not fire depending on keyword proximity
   assert.equal(result.opinion?.ship, false);
 });
+
+test("model provider error falls back to static findings", async () => {
+  const { ModelReviewError } = await import("@adversarylabs/sdk");
+  const root = await writeFixture("model-error-fallback", {
+    "main.go": `package main
+import "crypto/tls"
+func client() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
+`,
+  });
+  const model: ReviewModel = {
+    async review() {
+      throw new ModelReviewError("fireworks model request failed: Model not found", {
+        code: "fireworks_http_error",
+        retryable: false,
+      });
+    },
+  };
+  const result = await runWithModel(root, model);
+  assert.equal(result.assessment?.risk, "critical");
+  assert.ok(result.findings.some((f) => (f.ruleId ?? "") === "go-security.tls-verification"));
+  assert.equal(result.opinion?.ship, false);
+});
