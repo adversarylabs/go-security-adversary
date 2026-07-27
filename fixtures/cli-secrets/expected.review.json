@@ -1,0 +1,1 @@
+{"risk":"high","findings":[{"ruleId":"go-security.token-in-url","severity":"high","evidenceCount":1},{"ruleId":"go-security.secret-on-argv","severity":"high","evidenceCount":1},{"ruleId":"go-security.secret-command-output","severity":"high","evidenceCount":2},{"ruleId":"go-security.credential-file-mode","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
