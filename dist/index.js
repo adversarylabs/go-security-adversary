@@ -16398,7 +16398,8 @@ function contentSignal(file, ruleId, pattern, message, data = {}) {
 
 // src/domain.ts
 var domain = {
-  name: "go-security",
+  // Catalog / package identity uses domain/name taxonomy.
+  name: "go/security",
   displayName: "Go Security",
   observationKey: "go-security.analysis",
   sourceDescription: "security-relevant Go",
@@ -20940,7 +20941,7 @@ function prepareModelInputFromDiscovery(change, analysis, files) {
     });
   }
   return {
-    domain: "go-security",
+    domain: "go/security",
     change: {
       scanMode: change === null ? "repository" : change.scanMode,
       ...change?.baseRef === void 0 ? {} : { baseRef: change.baseRef },
@@ -21183,10 +21184,10 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.5",
+    version: "0.0.6",
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
-  app.rule(`${domain.name}.review`, async (ctx) => {
+  app.rule("go-security.review", async (ctx) => {
     const discovery = await discoverSources(ctx.repoPath, ctx.change);
     const analysis = await analyzeDiscovery(discovery);
     ctx.summary.files_scanned = analysis.filesScanned;

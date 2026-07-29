@@ -139,7 +139,7 @@ func fetch(token string) {
     deterministicSignals: Array<{ id: string; ruleId: string }>;
     evidenceCatalog: Array<{ id: string }>;
   };
-  assert.equal(input.domain, "go-security");
+  assert.equal(input.domain, "go/security");
   assert.ok(input.deterministicSignals.length >= 1);
   assert.ok(
     input.deterministicSignals.some((s) => s.ruleId === "go-security.secret-on-argv") ||

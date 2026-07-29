@@ -123,7 +123,7 @@ export interface PreparedEvidenceItem {
 }
 
 export interface PreparedModelInput {
-  domain: "go-security";
+  domain: "go/security";
   change: {
     scanMode: "changed" | "all" | "repository";
     baseRef?: string;
@@ -250,7 +250,7 @@ export function prepareModelInputFromDiscovery(
   }
 
   return {
-    domain: "go-security",
+    domain: "go/security",
     change: {
       scanMode: change === null ? "repository" : change.scanMode,
       ...(change?.baseRef === undefined ? {} : { baseRef: change.baseRef }),

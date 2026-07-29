@@ -2,7 +2,8 @@ import { contentSignal, lineSignals, positive } from "./signals.js";
 import { type DomainDefinition, type SourceRevision } from "./types.js";
 
 export const domain: DomainDefinition = {
-  name: "go-security",
+  // Catalog / package identity uses domain/name taxonomy.
+  name: "go/security",
   displayName: "Go Security",
   observationKey: "go-security.analysis",
   sourceDescription: "security-relevant Go",

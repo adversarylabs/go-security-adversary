@@ -1,8 +1,15 @@
-# Go Security adversary
+# go/security
 
 Go Security reviews trust boundaries, cryptography, TLS, authentication, authorization, and secret handling.
 
-The initial review covers disabled TLS verification, unconstrained JWT algorithms, and credentials written to logs. Severity reflects realistic boundary impact.
+Catalog id: **`go/security`** (domain/name taxonomy).
+
+```sh
+adversary pull go/security
+adversary run go/security --path . --base main --head feature
+```
+
+The review covers disabled TLS verification, unconstrained JWT algorithms, and credentials written to logs. Severity reflects realistic boundary impact.
 
 ## Fixtures and calibration
 
