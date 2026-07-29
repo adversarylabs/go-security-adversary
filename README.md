@@ -2,7 +2,8 @@
 
 Go Security reviews trust boundaries, cryptography, TLS, authentication, authorization, and secret handling.
 
-Catalog id: **`go/security`** (domain/name taxonomy).
+Catalog id: **`go/security`** (domain/name taxonomy).  
+GitHub repo: **`adversarylabs/go-security-adversary`** (`-adversary` suffix for discoverability; not the catalog id).
 
 ```sh
 adversary pull go/security
