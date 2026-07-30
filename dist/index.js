@@ -16488,6 +16488,114 @@ var domain = {
       whyItMatters: "Secret manager and cloud CLI failures often echo redacted-or-not values into stderr that applications re-print.",
       impact: "Tokens and secret values can land in terminal scrollback, CI logs, and error aggregators.",
       recommendation: "Avoid printing raw tool output for secret commands; surface a sanitized error and keep secret bytes out of fmt/log arguments."
+    },
+    {
+      id: "go-security.tls.insecure-skip-verify",
+      title: "TLS InsecureSkipVerify enabled",
+      concern: "disabled TLS peer verification",
+      category: "security",
+      severity: "critical",
+      confidence: "high",
+      summary: (count) => `${count} TLS configuration${count === 1 ? "" : "s"} set InsecureSkipVerify true.`,
+      whyItMatters: "Encryption without peer authentication does not establish who receives credentials or sensitive traffic.",
+      impact: "An active network attacker can impersonate the service and read or modify traffic.",
+      recommendation: "Remove InsecureSkipVerify and configure trusted roots and ServerName."
+    },
+    {
+      id: "go-security.sql.string-concat",
+      title: "SQL built via string concatenation",
+      concern: "SQL injection via string formatting",
+      category: "security",
+      severity: "critical",
+      confidence: "high",
+      summary: (count) => `${count} SQL construction${count === 1 ? "" : "s"} use string formatting/concatenation.`,
+      whyItMatters: "User-controlled fragments in SQL strings enable injection.",
+      impact: "Attackers can read or modify database contents.",
+      recommendation: "Use parameterized queries or bound arguments only."
+    },
+    {
+      id: "go-security.cmd.shell",
+      title: "Shell invoked with concatenated input",
+      concern: "command injection via shell",
+      category: "security",
+      severity: "critical",
+      confidence: "high",
+      summary: (count) => `${count} shell invocation${count === 1 ? "" : "s"} risk command injection.`,
+      whyItMatters: "bash -c / sh -c with untrusted input enables arbitrary command execution.",
+      impact: "Remote code execution on the host.",
+      recommendation: "Use exec.Command with argv arrays; never pass user input to a shell."
+    },
+    {
+      id: "go-security.path.traversal",
+      title: "Path join with user input without confinement",
+      concern: "path traversal",
+      category: "security",
+      severity: "high",
+      confidence: "medium",
+      summary: (count) => `${count} path construction${count === 1 ? "" : "s"} may allow traversal.`,
+      whyItMatters: "Unconfined joins of user path segments can escape intended directories.",
+      impact: "Unauthorized file read or write outside the intended root.",
+      recommendation: "Use filepath.IsLocal, Clean+prefix checks, securejoin, or os.Root."
+    },
+    {
+      id: "go-security.archive.zip-slip",
+      title: "Archive extraction without path confinement",
+      concern: "zip slip",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} archive extraction path${count === 1 ? "" : "s"} lack confinement checks.`,
+      whyItMatters: "Archive entries with ../ can escape the destination directory.",
+      impact: "Arbitrary file overwrite during extraction.",
+      recommendation: "Reject paths that escape the destination (filepath.IsLocal / securejoin)."
+    },
+    {
+      id: "go-security.crypto.math-rand",
+      title: "math/rand used for security-sensitive values",
+      concern: "insecure randomness",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} use${count === 1 ? "" : "s"} of math/rand for security-sensitive material.`,
+      whyItMatters: "math/rand is predictable and unsuitable for tokens or keys.",
+      impact: "Attackers can predict session tokens or nonces.",
+      recommendation: "Use crypto/rand for all security-sensitive randomness."
+    },
+    {
+      id: "go-security.crypto.hardcoded-key",
+      title: "Hardcoded cryptographic key material",
+      concern: "hardcoded keys",
+      category: "security",
+      severity: "critical",
+      confidence: "high",
+      summary: (count) => `${count} hardcoded key-like constant${count === 1 ? "" : "s"} used with crypto APIs.`,
+      whyItMatters: "Embedded keys are extractable from binaries and repositories.",
+      impact: "Anyone with the binary can decrypt or forge messages.",
+      recommendation: "Load keys from a secret manager or KMS; never embed production keys."
+    },
+    {
+      id: "go-security.crypto.static-nonce",
+      title: "Static or zero nonce/IV with AEAD/stream cipher",
+      concern: "nonce reuse",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} static nonce/IV pattern${count === 1 ? "" : "s"} near AEAD or stream cipher use.`,
+      whyItMatters: "Nonce reuse with GCM/CTR breaks confidentiality and authentication.",
+      impact: "Attackers can recover plaintexts or forge ciphertexts.",
+      recommendation: "Generate a unique nonce per message with crypto/rand."
+    },
+    {
+      id: "go-security.pprof.exposed",
+      title: "pprof registered on a public HTTP server",
+      concern: "debug endpoints exposed",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} pprof registration${count === 1 ? "" : "s"} appear beside public ListenAndServe.`,
+      whyItMatters: "pprof leaks process memory and profiles to remote callers.",
+      impact: "Attackers can extract secrets and reverse engineer internals.",
+      recommendation: "Bind pprof to localhost or protect it with authentication and network policy."
     }
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
@@ -16507,7 +16615,16 @@ var domain = {
         ...secretOnArgvSignals(file),
         ...tokenInUrlSignals(file),
         ...credentialFileModeSignals(file),
-        ...secretCommandOutputSignals(file)
+        ...secretCommandOutputSignals(file),
+        // Catalog alias: go-security.tls.insecure-skip-verify is covered by go-security.tls-verification above.
+        ...lineSignals(file, "go-security.sql.string-concat", /(?:Query|Exec|QueryContext|ExecContext)\s*\(\s*(?:fmt\.Sprintf|["'`].*(?:\+|fmt\.))/, () => "SQL appears constructed via string formatting or concatenation."),
+        ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
+        ...lineSignals(file, "go-security.path.traversal", /filepath\.Join\([^)]*\)|path\.Join\([^)]*\)/, () => "Path join may incorporate untrusted segments without confinement."),
+        ...lineSignals(file, "go-security.archive.zip-slip", /zip\.OpenReader|tar\.NewReader|zip\.NewReader/, () => "Archive extraction path may lack confinement checks."),
+        ...lineSignals(file, "go-security.crypto.math-rand", /\brand\.(?:Intn|Read|Float64|Int63)\b/, () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand).").filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current)),
+        ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
+        ...lineSignals(file, "go-security.crypto.static-nonce", /(?:nonce|iv)\s*(?::=|=)\s*(?:make\(\[\]byte,\s*\d+\)|\[\]byte\{0)/i, () => "Static or zeroed nonce/IV pattern near cryptographic use."),
+        ...lineSignals(file, "go-security.pprof.exposed", /net\/http\/pprof|_\s+"net\/http\/pprof"/, () => "pprof is imported; ensure it is not exposed on a public listener.")
       ],
       positives: [
         ...positive(file, "go-security.jwt-algorithm-bound", /\bWithValidMethods\s*\(/, "JWT verification explicitly constrains accepted algorithms."),
