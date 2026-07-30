@@ -16619,8 +16619,8 @@ var domain = {
         // Catalog alias: go-security.tls.insecure-skip-verify is covered by go-security.tls-verification above.
         ...lineSignals(file, "go-security.sql.string-concat", /(?:Query|Exec|QueryContext|ExecContext)\s*\(\s*(?:fmt\.Sprintf|["'`].*(?:\+|fmt\.))/, () => "SQL appears constructed via string formatting or concatenation."),
         ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
-        ...lineSignals(file, "go-security.path.traversal", /filepath\.Join\([^)]*\)|path\.Join\([^)]*\)/, () => "Path join may incorporate untrusted segments without confinement."),
-        ...lineSignals(file, "go-security.archive.zip-slip", /zip\.OpenReader|tar\.NewReader|zip\.NewReader/, () => "Archive extraction path may lack confinement checks."),
+        ...pathTraversalSignals(file),
+        ...zipSlipSignals(file),
         ...lineSignals(file, "go-security.crypto.math-rand", /\brand\.(?:Intn|Read|Float64|Int63)\b/, () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand).").filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current)),
         ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
         ...lineSignals(file, "go-security.crypto.static-nonce", /(?:nonce|iv)\s*(?::=|=)\s*(?:make\(\[\]byte,\s*\d+\)|\[\]byte\{0)/i, () => "Static or zeroed nonce/IV pattern near cryptographic use."),
@@ -16633,6 +16633,65 @@ var domain = {
     };
   }
 };
+function pathTraversalSignals(file) {
+  if (file.path.endsWith("_test.go")) return [];
+  const source = file.current;
+  if (!/(?:filepath|path)\.Join\s*\(/.test(source)) return [];
+  const hasConfinement = /filepath\.IsLocal\s*\(/.test(source) || /securejoin\.(?:SecureJoin|SecureJoinVFS)\s*\(/.test(source) || /\bos\.(?:OpenRoot|Root)\b/.test(source) || // Clean + HasPrefix / strings.HasPrefix confinement pattern
+  /filepath\.Clean\s*\(/.test(source) && /(?:strings\.HasPrefix|filepath\.HasPrefix)\s*\(/.test(source);
+  if (hasConfinement) return [];
+  const direct = lineSignals(
+    file,
+    "go-security.path.traversal",
+    /(?:os\.(?:Open|OpenFile|ReadFile|WriteFile|Create|MkdirAll|Remove|RemoveAll|Stat|Lstat)|ioutil\.(?:ReadFile|WriteFile)|http\.ServeFile)\s*\(\s*(?:filepath|path)\.Join\s*\(/,
+    () => "Path join of untrusted segments is opened without root confinement."
+  );
+  if (direct.length > 0) return direct;
+  const joinAssign = /\b([A-Za-z_]\w*)\s*:?=\s*(?:filepath|path)\.Join\s*\(([^)]*)\)/g;
+  const signals = [];
+  let match;
+  while ((match = joinAssign.exec(source)) !== null) {
+    const varName = match[1];
+    const args2 = match[2] ?? "";
+    const hasDynamicArg = args2.split(",").map((a) => a.trim()).some((a) => a.length > 0 && !/^[`"']/.test(a));
+    if (!hasDynamicArg) continue;
+    const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const openRe = new RegExp(
+      `\\b(?:os\\.(?:Open|OpenFile|ReadFile|WriteFile|Create|MkdirAll|Remove|RemoveAll|Stat|Lstat)|ioutil\\.(?:ReadFile|WriteFile)|http\\.ServeFile)\\s*\\(\\s*${escaped}\\b`
+    );
+    if (!openRe.test(source)) continue;
+    const line = source.slice(0, match.index).split("\n").length;
+    signals.push({
+      ruleId: "go-security.path.traversal",
+      path: file.path,
+      line,
+      message: `Joined path "${varName}" is opened without root confinement (IsLocal/securejoin/os.Root).`,
+      snippet: (match[0] ?? "").trim().slice(0, 300),
+      data: { variable: varName }
+    });
+  }
+  return signals;
+}
+function zipSlipSignals(file) {
+  if (file.path.endsWith("_test.go")) return [];
+  const source = file.current;
+  const hasArchive = /\bzip\.(?:OpenReader|NewReader)\b/.test(source) || /\btar\.(?:NewReader|Reader)\b/.test(source) || /archive\/(?:zip|tar)/.test(source);
+  if (!hasArchive) return [];
+  const joinsEntry = /(?:filepath|path)\.Join\s*\([^)]*\.(?:Name|FileInfo\(\)\.Name)/.test(source) || /(?:filepath|path)\.Join\s*\([^,]+,\s*(?:f|file|hdr|header|entry)\.Name\b/.test(source) || /(?:filepath|path)\.Join\s*\([^,]+,\s*\w+\.Name\b/.test(source);
+  if (!joinsEntry) {
+    if (!/\.Name\b/.test(source)) return [];
+  }
+  const hasConfinement = /filepath\.IsLocal\s*\(/.test(source) || /securejoin\.(?:SecureJoin|SecureJoinVFS)\s*\(/.test(source) || /\bfilepath\.Clean\s*\(/.test(source) && /(?:strings\.HasPrefix|filepath\.HasPrefix)\s*\(/.test(source) || /\bos\.(?:OpenRoot|Root)\b/.test(source);
+  if (hasConfinement) return [];
+  const extracts = /\b(?:os\.(?:OpenFile|Create|MkdirAll|WriteFile)|ioutil\.WriteFile|io\.Copy)\s*\(/.test(source) || joinsEntry;
+  if (!extracts) return [];
+  return lineSignals(
+    file,
+    "go-security.archive.zip-slip",
+    /zip\.(?:OpenReader|NewReader)|tar\.NewReader|(?:filepath|path)\.Join\s*\([^)]*\.Name/,
+    () => "Archive entry path is joined/written without confinement (zip-slip)."
+  ).slice(0, 3);
+}
 function secretOnArgvSignals(file) {
   return lineSignals(
     file,
