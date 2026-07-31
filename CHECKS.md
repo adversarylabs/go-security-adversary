@@ -1,10 +1,198 @@
-# Checks
+# Checks — what go/security detects
 
-- [ ] `npm test`
-- [ ] `adversary validate .`
-- [ ] `adversary pack --check .`
-- [ ] Five graded fixture snapshots match
-- [ ] Benchmark corpus contains 50–100 unique, reachable repositories
-- [ ] Runtime artifact executes without `node_modules`
-- [ ] No scanned repository writes or model calls
+This file is the **public audit list** of detectors. If a rule id appears here, it is part of the product surface: it should fire on a vulnerable pattern, stay quiet on the documented clean case, and produce file:line evidence.
 
+Runtime source of truth: [`src/domain.ts`](src/domain.ts).  
+Regression entry: [`test/p0-catalog.test.ts`](test/p0-catalog.test.ts) (P0 subset) and graded fixture snapshots.
+
+**Scope:** non-test `*.go` files only (`*_test.go` skipped).
+
+---
+
+## Critical
+
+### `go-security.tls-verification`
+
+| | |
+| --- | --- |
+| **What** | TLS config sets `InsecureSkipVerify: true` |
+| **Why** | Encryption without peer auth enables MITM |
+| **Looks for** | `InsecureSkipVerify: true` in source |
+| **Stays quiet when** | Field absent or false; verification is real |
+| **Fixture** | `fixtures/p0-tls/` |
+| **Remediation** | Remove skip-verify; set roots / `ServerName` |
+
+> Catalog name `go-security.tls.insecure-skip-verify` maps to this rule. Findings use `go-security.tls-verification`.
+
+### `go-security.sql.string-concat`
+
+| | |
+| --- | --- |
+| **What** | SQL built with `fmt.Sprintf` or string concatenation into Query/Exec APIs |
+| **Why** | Classic SQL injection |
+| **Looks for** | `Query` / `Exec` / `*Context` with `fmt.Sprintf` or `"`…`+` style assembly |
+| **Stays quiet when** | Bound parameters only (`Query("… $1", id)`) |
+| **Fixture** | `fixtures/p0-sql/` |
+| **Remediation** | Parameterized queries only |
+
+### `go-security.cmd.shell`
+
+| | |
+| --- | --- |
+| **What** | Shell invoked as `sh`/`bash` with `-c` |
+| **Why** | Command injection when input reaches the shell string |
+| **Looks for** | `exec.Command` / `CommandContext("sh"|"bash", "-c", …)` |
+| **Stays quiet when** | Argv form without a shell |
+| **Fixture** | `fixtures/p0-shell/` |
+| **Remediation** | `exec.Command` with argv slice; never shell untrusted input |
+
+### `go-security.crypto.hardcoded-key`
+
+| | |
+| --- | --- |
+| **What** | Hardcoded key material at cipher construction |
+| **Why** | Keys in source/binary are extractable |
+| **Looks for** | `aes.NewCipher([]byte{…})` / similar literal key bytes near cipher APIs |
+| **Stays quiet when** | Key from env/KMS/caller-provided buffer (no key literal) |
+| **Fixture** | `fixtures/p0-crypto-hardcoded-key/` |
+| **Remediation** | Load keys from a secret manager / KMS |
+
+---
+
+## High
+
+### `go-security.jwt-validation`
+
+| | |
+| --- | --- |
+| **What** | JWT parse without an explicit accepted-algorithm constraint |
+| **Why** | Algorithm confusion / incomplete verification |
+| **Looks for** | `jwt.Parse` / `ParseWithClaims` without `WithValidMethods` / `ValidMethods` nearby |
+| **Stays quiet when** | Parser options bind allowed algs |
+| **Remediation** | Allow only intended algorithms; validate iss/aud/exp |
+
+### `go-security.secret-logging`
+
+| | |
+| --- | --- |
+| **What** | Logs include token / password / authorization / secret-like fields |
+| **Why** | Logs are widely retained and shared |
+| **Looks for** | `log` / `slog` / `logger` calls whose arguments mention those words |
+| **Stays quiet when** | No credential-shaped fields in log args |
+| **Remediation** | Log non-secret ids only; never raw secrets |
+
+### `go-security.secret-on-argv`
+
+| | |
+| --- | --- |
+| **What** | Secret-like flags/values on subprocess argv |
+| **Why** | Visible via `ps`, audit logs, crash reports |
+| **Looks for** | `--token` / `--password` / `--secret` / similar near `exec.Command` |
+| **Stays quiet when** | Secrets via env / files / stdin |
+| **Remediation** | Do not put secrets on argv |
+
+### `go-security.token-in-url`
+
+| | |
+| --- | --- |
+| **What** | Credentials embedded in URL authority or path |
+| **Why** | URLs land in proxy logs, remotes, error dumps |
+| **Looks for** | `http(s)://…token…@` / user:pass@ / similar patterns |
+| **Stays quiet when** | Auth via headers or credential helpers |
+| **Remediation** | Never put long-lived secrets in URLs |
+
+### `go-security.credential-file-mode`
+
+| | |
+| --- | --- |
+| **What** | Credential-related writes with group/world-readable modes |
+| **Why** | Local multi-user / CI host leakage |
+| **Looks for** | `WriteFile` with permissive mode near credential-ish context |
+| **Stays quiet when** | Mode `0600` / owner-only |
+| **Remediation** | Write secrets as `0o600` |
+
+### `go-security.secret-command-output`
+
+| | |
+| --- | --- |
+| **What** | Printing raw output from secret-bearing CLI tools |
+| **Why** | Secret CLIs can echo material to stdout/stderr |
+| **Looks for** | `CombinedOutput` / `Output` / print of tool output near doppler/aws/gcloud/vault/kubectl secret flows |
+| **Stays quiet when** | Sanitized errors only |
+| **Remediation** | Never print raw secret-tool output |
+
+### `go-security.path.traversal`
+
+| | |
+| --- | --- |
+| **What** | `filepath.Join` / `path.Join` of dynamic segments **opened** without root confinement |
+| **Why** | `../` escapes intended directories |
+| **Looks for** | Join of non-literal segments used with `os.Open` / `ReadFile` / `Create` / etc., without `filepath.IsLocal`, Clean+HasPrefix, securejoin, or `os.Root` |
+| **Stays quiet when** | Bare internal joins with no open; or confinement present |
+| **Fixture** | `fixtures/p0-path/` |
+| **Remediation** | `filepath.IsLocal`, securejoin, or `os.Root` |
+
+### `go-security.archive.zip-slip`
+
+| | |
+| --- | --- |
+| **What** | Zip/tar entry names joined and written without confinement |
+| **Why** | Zip-slip arbitrary file write |
+| **Looks for** | `zip.OpenReader` / tar reader + join on `.Name` + create/write without IsLocal/securejoin |
+| **Stays quiet when** | Entry names validated with `filepath.IsLocal` (or equivalent) before write |
+| **Fixture** | `fixtures/p0-zip/` |
+| **Remediation** | Reject non-local entry paths before extract |
+
+### `go-security.crypto.math-rand`
+
+| | |
+| --- | --- |
+| **What** | `math/rand` used where security-sensitive tokens/keys/nonces/sessions are nearby |
+| **Why** | Predictable PRNG |
+| **Looks for** | `rand.Intn` / `Read` / etc. with `math/rand` import and security-ish identifiers in file |
+| **Stays quiet when** | `crypto/rand` for secrets; plain math/rand for non-security sampling without secret context |
+| **Fixture** | `fixtures/p0-crypto-math-rand/` |
+| **Remediation** | `crypto/rand` for all security-sensitive randomness |
+
+### `go-security.crypto.static-nonce`
+
+| | |
+| --- | --- |
+| **What** | Static or zeroed nonce/IV near AEAD/stream use |
+| **Why** | Nonce reuse breaks GCM/CTR |
+| **Looks for** | `nonce`/`iv` assigned via `make([]byte, N)` zeros or `{0…}` near seal/cipher use |
+| **Stays quiet when** | Fresh `crypto/rand` fill per message (e.g. `io.ReadFull(rand.Reader, nonce)`) |
+| **Fixture** | `fixtures/p0-crypto-static-nonce/` |
+| **Remediation** | Unique nonce per message from `crypto/rand` |
+
+### `go-security.pprof.exposed`
+
+| | |
+| --- | --- |
+| **What** | `net/http/pprof` imported / registered with public listen patterns |
+| **Why** | Memory and profile leakage |
+| **Looks for** | `net/http/pprof` import (blank or named) |
+| **Stays quiet when** | pprof not imported (bind to localhost is LLM/enhancement guidance) |
+| **Fixture** | `fixtures/p0-pprof/` |
+| **Remediation** | Localhost-only or auth-gated debug servers |
+
+---
+
+## Explicitly not this adversary
+
+| Concern | Where it lives |
+| --- | --- |
+| HTTP timeouts, CORS, open redirect, WebSocket origin | `go/http` |
+| Rows/tx lifecycle, GORM Raw concat | `go/database` |
+| Provider-shaped committed secrets (AWS keys, PATs, …) | `security/secrets` |
+| Concurrency bugs (WaitGroup, mutex copy, …) | `go/concurrency` |
+| Generic CSRF / missing authz product design | LLM/enhancement roadmap — not static P0 here |
+
+---
+
+## How to extend
+
+1. Add a rule object + detector in `src/domain.ts`.
+2. Document the rule in this file (id, severity, looks for, quiet when, fixture).
+3. Add `fixtures/<name>/{vulnerable,clean}` and a fail-closed test.
+4. Keep confidence high only for deterministic evidence.
