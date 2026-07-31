@@ -2,10 +2,6 @@
 
 **go/security** reviews Go source for high-confidence **trust-boundary** defects: disabled TLS verification, SQL and shell injection, weak crypto, path/archive escapes, credential leakage, and exposed debug endpoints.
 
-Catalog id: **`go/security`**  
-Repository: [`adversarylabs/go-security-adversary`](https://github.com/adversarylabs/go-security-adversary)  
-Current package version: see `adversary.yaml`.
-
 It is a **domain security reviewer**, not a general Go linter. It prefers silence over noisy style advice. When it reports, it should be something a staff security engineer would open a ticket for.
 
 ## What it does
