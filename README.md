@@ -47,28 +47,6 @@ Other official adversaries own adjacent classes so findings stay non-duplicative
 - Clean fixtures must stay quiet; vulnerable fixtures must fire (see `fixtures/p0-*` and graded tiers).
 - Prefer missing a weak signal over a false positive on normal Go code (e.g. path traversal only when a join is **opened** without confinement).
 
-## Project layout
-
-| Path | Purpose |
-| --- | --- |
-| [CHECKS.md](CHECKS.md) | **Audit list of every detection** (rule id, severity, what, when quiet) |
-| [docs/issue-catalog.md](docs/issue-catalog.md) | Priority roadmap (P0 / P1 / LLM-only) and pattern references |
-| `src/domain.ts` | Rule definitions + detectors (source of truth for runtime) |
-| `fixtures/` | Graded + P0 vulnerable/clean pairs |
-| `test/` | Regression tests including `p0-catalog.test.ts` |
-| `adversary.yaml` | Manifest (name, version, runtime, permissions) |
-
-## Development
-
-```sh
-npm ci
-npm test
-adversary validate .
-adversary pack --check .
-```
-
-Add a vulnerable + clean fixture (and a fail-closed test) for every new rule.
-
 ## License
 
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and repository license metadata.
