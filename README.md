@@ -46,7 +46,3 @@ Other official adversaries own adjacent classes so findings stay non-duplicative
 - **High confidence** only for deterministic, evidence-backed patterns.
 - Clean fixtures must stay quiet; vulnerable fixtures must fire (see `fixtures/p0-*` and graded tiers).
 - Prefer missing a weak signal over a false positive on normal Go code (e.g. path traversal only when a join is **opened** without confinement).
-
-## License
-
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and repository license metadata.
