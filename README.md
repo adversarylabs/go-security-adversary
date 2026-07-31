@@ -35,6 +35,8 @@ adversary run go/security --path . --base main --head HEAD
 
 Every **shipped rule id**, severity, and short description lives in **[CHECKS.md](CHECKS.md)** — the audit surface for “what does this adversary look for?”
 
+Broader priority / roadmap notes (P0 / P1 / LLM-only) are in [docs/issue-catalog.md](docs/issue-catalog.md).
+
 Highlights:
 
 | Area | Examples |
@@ -68,6 +70,7 @@ Other official adversaries own adjacent classes so findings stay non-duplicative
 | Path | Purpose |
 | --- | --- |
 | [CHECKS.md](CHECKS.md) | **Audit list of every detection** (rule id, severity, what, when quiet) |
+| [docs/issue-catalog.md](docs/issue-catalog.md) | Priority roadmap (P0 / P1 / LLM-only) and pattern references |
 | `src/domain.ts` | Rule definitions + detectors (source of truth for runtime) |
 | `fixtures/` | Graded + P0 vulnerable/clean pairs |
 | `test/` | Regression tests including `p0-catalog.test.ts` |
