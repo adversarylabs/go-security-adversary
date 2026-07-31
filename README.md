@@ -13,20 +13,6 @@ It is a **domain security reviewer**, not a general Go linter. It prefers silenc
 
 It never executes the scanned project, never installs dependencies into it, and never needs network access to the target.
 
-## Install and run
-
-```sh
-adversary pull go/security
-
-# whole tree
-adversary run go/security --path .
-
-# change-focused (typical PR review)
-adversary run go/security --path . --base main --head HEAD
-```
-
-`adversary auto` selects go/security when Go sources change.
-
 ## What it detects
 
 Every **shipped rule id**, severity, and short description lives in **[CHECKS.md](CHECKS.md)** — the audit surface for “what does this adversary look for?”
