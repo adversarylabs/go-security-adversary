@@ -1,6 +1,7 @@
 import { formatOpinion, requireOpinionConcern, type RuleContext } from "@adversarylabs/sdk";
 import { domain } from "./domain.js";
 import { runModelSecurityReview, type DiscoveryFile } from "./model-review.js";
+import { attachImportNavigation } from "./navigation.js";
 import { type Analysis, type RuleDefinition, type Signal } from "./types.js";
 
 const RISK_ORDER = { none: 0, low: 1, medium: 2, high: 3, critical: 4 } as const;
@@ -51,6 +52,8 @@ export async function reviewDomain(
       remediation: { complexity: "small" },
     });
   }
+
+  await attachImportNavigation(ctx, analysis);
 
   addPositives(ctx, analysis);
 
