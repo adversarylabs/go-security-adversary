@@ -26,6 +26,20 @@ export async function discoverSources(
     return trackedRepository(repoPath);
   }
 
+  // Prefer the CLI's authoritative change list (includes untracked). Re-running
+  // `git diff` alone misses untracked files that ResolveRunScope already listed.
+  if (
+    change !== null &&
+    change.scanMode === "changed" &&
+    change.changedFiles.length > 0
+  ) {
+    return listedChangeDiscovery(
+      repoPath,
+      change.changedFiles,
+      change.baseRef ?? "HEAD",
+    );
+  }
+
   if (change !== null && change.scanMode === "changed" &&
     change.baseRef !== undefined && (await revisionExists(repoPath, change.baseRef))) {
     const head = change.worktree ? [] : ["HEAD"];
@@ -50,9 +64,61 @@ export async function discoverSources(
 }
 
 async function trackedRepository(repoPath: string): Promise<Discovery> {
-  const paths = (await gitOutput(repoPath, ["ls-files", "-z"]))
-    .split("\0").filter((path) => domain.includePath(path)).slice(0, MAX_FILES);
+  // Tracked + untracked (respecting .gitignore) so local plants are visible under --all-files.
+  const tracked = (await gitOutput(repoPath, ["ls-files", "-z"])).split("\0");
+  let untracked: string[] = [];
+  try {
+    untracked = (await gitOutput(repoPath, ["ls-files", "-z", "-o", "--exclude-standard"])).split("\0");
+  } catch {
+    untracked = [];
+  }
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const path of [...tracked, ...untracked]) {
+    if (!path || seen.has(path) || !domain.includePath(path)) continue;
+    seen.add(path);
+    paths.push(path);
+    if (paths.length >= MAX_FILES) break;
+  }
   return { mode: "repository", files: await readSources(repoPath, paths) };
+}
+
+/** Load paths from the CLI change list (worktree-aware; untracked → added). */
+async function listedChangeDiscovery(
+  repoPath: string,
+  changedFiles: readonly string[],
+  base: string,
+): Promise<Discovery> {
+  const files: SourceRevision[] = [];
+  for (const raw of changedFiles) {
+    if (files.length >= MAX_FILES) break;
+    const path = raw.replaceAll("\\", "/");
+    if (!domain.includePath(path)) continue;
+    const current = await safeRead(join(repoPath, path));
+    if (current === undefined) continue;
+    const tracked = await isTracked(repoPath, path);
+    if (!tracked) {
+      files.push({ path, current, changedLines: new Set(), status: "added" });
+      continue;
+    }
+    const changedLines = await changedLineNumbers(repoPath, base, path);
+    files.push({
+      path,
+      current,
+      changedLines,
+      status: changedLines.size === 0 ? "added" : "modified",
+    });
+  }
+  return { mode: "diff", base, files };
+}
+
+async function isTracked(repoPath: string, path: string): Promise<boolean> {
+  try {
+    const out = await gitOutput(repoPath, ["ls-files", "--", path]);
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function diffDiscovery(repoPath: string, base: string, names: string): Promise<Discovery> {
