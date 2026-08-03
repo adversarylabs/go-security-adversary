@@ -3656,49 +3656,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative4, options, skipNormalization) {
+    function resolveComponent(base, relative3, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse(serialize(base, options), options);
-        relative4 = parse(serialize(relative4, options), options);
+        relative3 = parse(serialize(relative3, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative4.scheme) {
-        target.scheme = relative4.scheme;
-        target.userinfo = relative4.userinfo;
-        target.host = relative4.host;
-        target.port = relative4.port;
-        target.path = removeDotSegments(relative4.path || "");
-        target.query = relative4.query;
+      if (!options.tolerant && relative3.scheme) {
+        target.scheme = relative3.scheme;
+        target.userinfo = relative3.userinfo;
+        target.host = relative3.host;
+        target.port = relative3.port;
+        target.path = removeDotSegments(relative3.path || "");
+        target.query = relative3.query;
       } else {
-        if (relative4.userinfo !== void 0 || relative4.host !== void 0 || relative4.port !== void 0) {
-          target.userinfo = relative4.userinfo;
-          target.host = relative4.host;
-          target.port = relative4.port;
-          target.path = removeDotSegments(relative4.path || "");
-          target.query = relative4.query;
+        if (relative3.userinfo !== void 0 || relative3.host !== void 0 || relative3.port !== void 0) {
+          target.userinfo = relative3.userinfo;
+          target.host = relative3.host;
+          target.port = relative3.port;
+          target.path = removeDotSegments(relative3.path || "");
+          target.query = relative3.query;
         } else {
-          if (!relative4.path) {
+          if (!relative3.path) {
             target.path = base.path;
-            if (relative4.query !== void 0) {
-              target.query = relative4.query;
+            if (relative3.query !== void 0) {
+              target.query = relative3.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative4.path[0] === "/") {
-              target.path = removeDotSegments(relative4.path);
+            if (relative3.path[0] === "/") {
+              target.path = removeDotSegments(relative3.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target.path = "/" + relative4.path;
+                target.path = "/" + relative3.path;
               } else if (!base.path) {
-                target.path = relative4.path;
+                target.path = relative3.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative4.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative3.path;
               }
               target.path = removeDotSegments(target.path);
             }
-            target.query = relative4.query;
+            target.query = relative3.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -3706,7 +3706,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative4.fragment;
+      target.fragment = relative3.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -11137,10 +11137,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start: start2, key, sep: sep3, value } = collItem;
+        const { start: start2, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start2, {
           indicator: "explicit-key-ind",
-          next: key ?? sep3?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -11154,7 +11154,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep3) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -11178,7 +11178,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep3 ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -11194,7 +11194,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep3, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -11285,7 +11285,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep3 = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -11299,13 +11299,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep3 + cb;
-              sep3 = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep3 += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -11348,18 +11348,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i2 = 0; i2 < fc.items.length; ++i2) {
         const collItem = fc.items[i2];
-        const { start: start2, key, sep: sep3, value } = collItem;
+        const { start: start2, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start2, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep3?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep3 && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i2 === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i2 < fc.items.length - 1)
@@ -11413,8 +11413,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep3 && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep3, null, props, onError);
+        if (!isMap && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -11426,7 +11426,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep3 ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -11437,8 +11437,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep3)
-                for (const st of sep3) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -11455,7 +11455,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep3, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -11635,7 +11635,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i2 + 1;
       }
       let value = "";
-      let sep3 = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i2 = 0; i2 < contentStart; ++i2)
         value += lines[i2][0].slice(trimIndent) + "\n";
@@ -11652,24 +11652,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep3 + indent.slice(trimIndent) + content;
-          sep3 = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep3 === " ")
-            sep3 = "\n";
-          else if (!prevMoreIndented && sep3 === "\n")
-            sep3 = "\n\n";
-          value += sep3 + indent.slice(trimIndent) + content;
-          sep3 = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep3 === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep3 = "\n";
+            sep2 = "\n";
         } else {
-          value += sep3 + content;
-          sep3 = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -11851,25 +11851,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep3 = " ";
+      let sep2 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep3 === "\n")
-            res += sep3;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep3 = "\n";
+            sep2 = "\n";
         } else {
-          res += sep3 + match[1];
-          sep3 = " ";
+          res += sep2 + match[1];
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep3 + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -12679,14 +12679,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start: start2, key, sep: sep3, value }) {
+    function stringifyItem({ start: start2, key, sep: sep2, value }) {
       let res = "";
       for (const st of start2)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep3)
-        for (const st of sep3)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -13853,18 +13853,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start2 = getFirstKeyStartProps(prev);
-          let sep3;
+          let sep2;
           if (scalar.end) {
-            sep3 = scalar.end;
-            sep3.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep3 = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start: start2, key: scalar, sep: sep3 }]
+            items: [{ start: start2, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -14017,15 +14017,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start3 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep3 = it.sep;
-                  sep3.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start3, key, sep: sep3 }]
+                    items: [{ start: start3, key, sep: sep2 }]
                   });
                 } else if (start2.length > 0) {
                   it.sep = it.sep.concat(start2, this.sourceToken);
@@ -14219,13 +14219,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start2 = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep3 = fc.end.splice(1, fc.end.length);
-            sep3.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start: start2, key: fc, sep: sep3 }]
+              items: [{ start: start2, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -14509,7 +14509,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // node_modules/@adversarylabs/sdk/dist/index.js
 var import__2 = __toESM(require__(), 1);
-import { mkdir, readFile as readFile2, readdir as readdir2, writeFile } from "node:fs/promises";
+import { mkdir, readFile as readFile3, readdir as readdir3, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2 } from "node:path";
 
 // node_modules/@adversarylabs/sdk/dist/model.js
@@ -14804,11 +14804,121 @@ function validateModelOutput(schema, output) {
   }
 }
 
+// node_modules/@adversarylabs/sdk/dist/repo-index.js
+import { open, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+var ADVERSARY_REPO_INDEX_ENV = "ADVERSARY_REPO_INDEX";
+var REPO_INDEX_SCHEMA_VERSION = "v1";
+var RepoIndexUnavailableError = class extends Error {
+  code = "repo_index_unavailable";
+  constructor(message) {
+    super(message);
+    this.name = "RepoIndexUnavailableError";
+  }
+};
+async function openRepoIndex(dir) {
+  const metaRaw = await readFile(join(dir, "meta.json"), "utf8");
+  const meta = JSON.parse(metaRaw);
+  if (meta.schemaVersion !== REPO_INDEX_SCHEMA_VERSION) {
+    throw new RepoIndexUnavailableError(`unsupported repo-index schema ${meta.schemaVersion} (want ${REPO_INDEX_SCHEMA_VERSION})`);
+  }
+  const files = await readJsonl(join(dir, "files.jsonl"));
+  const edges = await readJsonl(join(dir, "edges.jsonl"));
+  return new MemoryRepoIndex(dir, meta, files, edges);
+}
+async function repoIndexFromEnvironment(env = process.env) {
+  const dir = env[ADVERSARY_REPO_INDEX_ENV]?.trim();
+  if (!dir) {
+    return null;
+  }
+  try {
+    return await openRepoIndex(dir);
+  } catch {
+    return null;
+  }
+}
+var MemoryRepoIndex = class {
+  dir;
+  meta;
+  files;
+  edges;
+  constructor(dir, meta, files, edges) {
+    this.dir = dir;
+    this.meta = meta;
+    this.files = files;
+    this.edges = edges;
+  }
+  async listFiles(options = {}) {
+    const limit = options.limit && options.limit > 0 ? options.limit : 5e3;
+    const language = options.language?.trim();
+    const out2 = [];
+    for (const file of this.files) {
+      if (language && file.language !== language) {
+        continue;
+      }
+      out2.push(file);
+      if (out2.length >= limit) {
+        break;
+      }
+    }
+    return out2;
+  }
+  async file(path) {
+    const normalized = normalizePath(path);
+    return this.files.find((file) => file.path === normalized);
+  }
+  async importsOf(path) {
+    const normalized = normalizePath(path);
+    return this.edges.filter((edge) => edge.from === normalized && edge.kind === "import");
+  }
+  async importersOf(path) {
+    const normalized = normalizePath(path);
+    const dir = dirOf(normalized);
+    return this.edges.filter((edge) => {
+      if (edge.kind !== "import") {
+        return false;
+      }
+      return edge.to === normalized || edge.to === dir;
+    });
+  }
+};
+function normalizePath(path) {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+function dirOf(path) {
+  const idx = path.lastIndexOf("/");
+  if (idx <= 0) {
+    return "";
+  }
+  return path.slice(0, idx);
+}
+async function readJsonl(path) {
+  const handle2 = await open(path, "r");
+  try {
+    const rl = createInterface({
+      input: handle2.createReadStream(),
+      crlfDelay: Number.POSITIVE_INFINITY
+    });
+    const out2 = [];
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      out2.push(JSON.parse(trimmed));
+    }
+    return out2;
+  } finally {
+    await handle2.close();
+  }
+}
+
 // node_modules/@adversarylabs/sdk/dist/repository-model.js
 import { createReadStream } from "node:fs";
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { createInterface } from "node:readline";
+import { createInterface as createInterface2 } from "node:readline";
 var DEFAULT_MAX_ROUNDS = 6;
 var MAX_MAX_ROUNDS = 12;
 var DEFAULT_MAX_TOOL_CALLS = 24;
@@ -15158,7 +15268,7 @@ async function executeReadFile(root, operation, budget, include, exclude, citati
     throw new Error("read_file path is outside the configured repository file set");
   }
   const stream = createReadStream(absolute, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  const lines = createInterface2({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
   const selected = [];
   let lineNumber = 0;
   let bytes = 0;
@@ -15261,110 +15371,108 @@ function addUsage(total, next) {
   };
 }
 
-// node_modules/@adversarylabs/sdk/dist/repo-index.js
-import { open, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createInterface as createInterface2 } from "node:readline";
-var ADVERSARY_REPO_INDEX_ENV = "ADVERSARY_REPO_INDEX";
-var REPO_INDEX_SCHEMA_VERSION = "v1";
-var RepoIndexUnavailableError = class extends Error {
-  code = "repo_index_unavailable";
-  constructor(message) {
-    super(message);
-    this.name = "RepoIndexUnavailableError";
+// node_modules/@adversarylabs/sdk/dist/sources.js
+import { readFile as readFile2, readdir as readdir2 } from "node:fs/promises";
+import { join as join2 } from "node:path";
+var DEFAULT_IGNORE_DIRECTORIES = Object.freeze([
+  ".git",
+  ".next",
+  "build",
+  "coverage",
+  "dist",
+  "generated",
+  "node_modules",
+  "third_party",
+  "vendor"
+]);
+async function listInScopePaths(repoPath, change, options = {}) {
+  const include = options.include ?? (() => true);
+  const limit = options.limit !== void 0 && options.limit > 0 ? options.limit : void 0;
+  const ignore = new Set(options.ignoreDirectories ?? DEFAULT_IGNORE_DIRECTORIES);
+  let candidates;
+  if (change !== null && change.scanMode === "changed") {
+    candidates = change.changedFiles.map(normalizePath2);
+  } else {
+    candidates = await walkRelative(repoPath, ignore);
   }
-};
-async function openRepoIndex(dir) {
-  const metaRaw = await readFile(join(dir, "meta.json"), "utf8");
-  const meta = JSON.parse(metaRaw);
-  if (meta.schemaVersion !== REPO_INDEX_SCHEMA_VERSION) {
-    throw new RepoIndexUnavailableError(`unsupported repo-index schema ${meta.schemaVersion} (want ${REPO_INDEX_SCHEMA_VERSION})`);
+  const out2 = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const path of candidates) {
+    if (!path || seen.has(path))
+      continue;
+    if (path.split("/").some((segment) => ignore.has(segment)))
+      continue;
+    if (!include(path))
+      continue;
+    seen.add(path);
+    out2.push(path);
+    if (limit !== void 0 && out2.length >= limit)
+      break;
   }
-  const files = await readJsonl(join(dir, "files.jsonl"));
-  const edges = await readJsonl(join(dir, "edges.jsonl"));
-  return new MemoryRepoIndex(dir, meta, files, edges);
+  return out2;
 }
-async function repoIndexFromEnvironment(env = process.env) {
-  const dir = env[ADVERSARY_REPO_INDEX_ENV]?.trim();
-  if (!dir) {
-    return null;
-  }
-  try {
-    return await openRepoIndex(dir);
-  } catch (error) {
-    throw new RepoIndexUnavailableError(error instanceof Error ? error.message : String(error));
-  }
-}
-var MemoryRepoIndex = class {
-  dir;
-  meta;
-  files;
-  edges;
-  constructor(dir, meta, files, edges) {
-    this.dir = dir;
-    this.meta = meta;
-    this.files = files;
-    this.edges = edges;
-  }
-  async listFiles(options = {}) {
-    const limit = options.limit && options.limit > 0 ? options.limit : 5e3;
-    const language = options.language?.trim();
-    const out2 = [];
-    for (const file of this.files) {
-      if (language && file.language !== language) {
-        continue;
-      }
-      out2.push(file);
-      if (out2.length >= limit) {
-        break;
-      }
-    }
-    return out2;
-  }
-  async file(path) {
-    const normalized = normalizePath(path);
-    return this.files.find((file) => file.path === normalized);
-  }
-  async importsOf(path) {
-    const normalized = normalizePath(path);
-    return this.edges.filter((edge) => edge.from === normalized && edge.kind === "import");
-  }
-  async importersOf(path) {
-    const normalized = normalizePath(path);
-    const dir = dirOf(normalized);
-    return this.edges.filter((edge) => {
-      if (edge.kind !== "import") {
-        return false;
-      }
-      return edge.to === normalized || edge.to === dir;
+async function loadInScopeSources(repoPath, change, options = {}) {
+  const maxBytes = options.maxBytes ?? 75e4;
+  const paths = await listInScopePaths(repoPath, change, {
+    include: options.include,
+    limit: options.limit ?? 750,
+    ignoreDirectories: options.ignoreDirectories
+  });
+  const wholeTarget = change === null || change.scanMode === "all";
+  const changedSet = new Set((change?.changedFiles ?? []).map(normalizePath2));
+  const sources = [];
+  for (const path of paths) {
+    const content = await safeReadText(join2(repoPath, path), maxBytes);
+    if (content === void 0)
+      continue;
+    sources.push({
+      path,
+      content,
+      status: wholeTarget && !changedSet.has(path) ? "repository" : "changed"
     });
   }
-};
-function normalizePath(path) {
+  return sources;
+}
+function normalizePath2(path) {
   return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
-function dirOf(path) {
-  const idx = path.lastIndexOf("/");
-  if (idx <= 0) {
-    return "";
-  }
-  return path.slice(0, idx);
-}
-async function readJsonl(path) {
-  const handle2 = await open(path, "r");
-  try {
-    const rl = createInterface2({ input: handle2.createReadStream(), crlfDelay: Infinity });
-    const out2 = [];
-    for await (const line of rl) {
-      const trimmed = line.trim();
-      if (!trimmed) {
+async function walkRelative(repoPath, ignore) {
+  const out2 = [];
+  async function visit(relativeDir) {
+    const abs = relativeDir === "" ? repoPath : join2(repoPath, relativeDir);
+    let entries;
+    try {
+      entries = await readdir2(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const rel = relativeDir === "" ? entry.name : `${relativeDir}/${entry.name}`.replaceAll("\\", "/");
+      if (entry.isDirectory()) {
+        if (ignore.has(entry.name))
+          continue;
+        await visit(rel);
         continue;
       }
-      out2.push(JSON.parse(trimmed));
+      if (entry.isFile()) {
+        out2.push(rel.replaceAll("\\", "/"));
+      }
     }
-    return out2;
-  } finally {
-    await handle2.close();
+  }
+  await visit("");
+  return out2;
+}
+async function safeReadText(absPath, maxBytes) {
+  try {
+    const buffer = await readFile2(absPath);
+    if (buffer.byteLength > maxBytes)
+      return void 0;
+    if (buffer.includes(0))
+      return void 0;
+    return buffer.toString("utf8");
+  } catch {
+    return void 0;
   }
 }
 
@@ -15626,7 +15734,7 @@ function toWireEvidence(evidence) {
   });
 }
 async function parseInput(path = DEFAULT_INPUT_PATH) {
-  const raw = await readFile2(path, "utf8");
+  const raw = await readFile3(path, "utf8");
   const parsed = JSON.parse(raw);
   if (!isRecord(parsed)) {
     throw new Error(`Invalid input at ${path}: expected an object.`);
@@ -15667,7 +15775,7 @@ async function writeOutput(output, path = DEFAULT_OUTPUT_PATH) {
 async function validateRunEnvelope(output) {
   let validator = envelopeValidator;
   if (validator === void 0) {
-    const schema = JSON.parse(await readFile2(new URL("../schemas/adversary.review.v1.schema.json", import.meta.url), "utf8"));
+    const schema = JSON.parse(await readFile3(new URL("../schemas/adversary.review.v1.schema.json", import.meta.url), "utf8"));
     validator = new import__2.Ajv2020({ allErrors: true, strict: true }).compile(schema);
     envelopeValidator = validator;
   }
@@ -15742,6 +15850,12 @@ function createRuleContext(repoPath, change, summary, cache, collector, registry
     rglob(pattern) {
       return findMatchingPaths(absoluteRepoPath, pattern, true);
     },
+    listInScopePaths(options) {
+      return listInScopePaths(absoluteRepoPath, change, options);
+    },
+    loadInScopeSources(options) {
+      return loadInScopeSources(absoluteRepoPath, change, options);
+    },
     observe(observation) {
       assertObservationInit(observation, "ctx.observe", registry);
       collector.observations.push(observation);
@@ -15787,11 +15901,11 @@ async function findMatchingPaths(repoPath, pattern, recursive) {
   }).sort(compareStrings);
 }
 async function listFiles(directory) {
-  const entries = await readdir2(directory, { withFileTypes: true });
+  const entries = await readdir3(directory, { withFileTypes: true });
   return entries.filter((entry) => entry.isFile()).map((entry) => resolve2(directory, entry.name));
 }
 async function walk(directory) {
-  const entries = await readdir2(directory, { withFileTypes: true });
+  const entries = await readdir3(directory, { withFileTypes: true });
   const paths = [];
   for (const entry of entries) {
     const path = resolve2(directory, entry.name);
@@ -17328,7 +17442,7 @@ function secretCommandOutputSignals(file) {
 
 // src/parser.ts
 import { existsSync } from "node:fs";
-import { dirname as dirname2, join as join2 } from "node:path";
+import { dirname as dirname2, join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // node_modules/web-tree-sitter/web-tree-sitter.js
@@ -21307,8 +21421,8 @@ var languagePromise;
 function assetPath(name2) {
   const currentDirectory = dirname2(fileURLToPath(import.meta.url));
   const candidates = [
-    join2(currentDirectory, name2),
-    join2(currentDirectory, "..", "node_modules", name2 === "web-tree-sitter.wasm" ? "web-tree-sitter" : "tree-sitter-go", name2)
+    join3(currentDirectory, name2),
+    join3(currentDirectory, "..", "node_modules", name2 === "web-tree-sitter.wasm" ? "web-tree-sitter" : "tree-sitter-go", name2)
   ];
   const match = candidates.find(existsSync);
   if (match === void 0) throw new Error(`Unable to locate parser asset ${name2}`);
@@ -21374,224 +21488,27 @@ function byLocation(left, right) {
 }
 
 // src/discover.ts
-import { execFile } from "node:child_process";
-import { readFile as readFile3, readdir as readdir3 } from "node:fs/promises";
-import { join as join3, sep as sep2 } from "node:path";
-import { promisify } from "node:util";
-var execute = promisify(execFile);
-var IGNORED_DIRECTORIES = /* @__PURE__ */ new Set([
-  ".git",
-  "build",
-  "dist",
-  "generated",
-  "node_modules",
-  "third_party",
-  "vendor"
-]);
 var MAX_FILE_BYTES = 75e4;
 var MAX_FILES = 750;
-async function discoverSources(repoPath, change) {
-  if (!await isGitRepository(repoPath) || !await revisionExists(repoPath, "HEAD")) {
-    return { mode: "repository", files: await readSources(repoPath, await repositoryFiles(repoPath)) };
-  }
-  if (change !== null && change.scanMode === "all") {
-    return trackedRepository(repoPath);
-  }
-  if (change !== null && change.scanMode === "changed" && change.changedFiles.length > 0) {
-    return listedChangeDiscovery(
-      repoPath,
-      change.changedFiles,
-      change.baseRef ?? "HEAD"
-    );
-  }
-  if (change !== null && change.scanMode === "changed" && change.baseRef !== void 0 && await revisionExists(repoPath, change.baseRef)) {
-    const head = change.worktree ? [] : ["HEAD"];
-    const names = await gitOutput(
-      repoPath,
-      ["diff", "--name-status", "--find-renames", change.baseRef, ...head, "--"]
-    );
-    return diffDiscovery(repoPath, change.baseRef, names);
-  }
-  const worktree = await gitOutput(repoPath, ["diff", "--name-status", "--find-renames", "HEAD", "--"]);
-  if (worktree.trim() !== "") return diffDiscovery(repoPath, "HEAD", worktree);
-  const base = await chooseBase(repoPath);
-  if (base !== void 0) {
-    const names = await gitOutput(repoPath, ["diff", "--name-status", "--find-renames", base, "HEAD", "--"]);
-    if (names.trim() !== "") return diffDiscovery(repoPath, base, names);
-  }
-  return trackedRepository(repoPath);
-}
-async function trackedRepository(repoPath) {
-  const tracked = (await gitOutput(repoPath, ["ls-files", "-z"])).split("\0");
-  let untracked = [];
-  try {
-    untracked = (await gitOutput(repoPath, ["ls-files", "-z", "-o", "--exclude-standard"])).split("\0");
-  } catch {
-    untracked = [];
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const paths = [];
-  for (const path of [...tracked, ...untracked]) {
-    if (!path || seen.has(path) || !domain.includePath(path)) continue;
-    seen.add(path);
-    paths.push(path);
-    if (paths.length >= MAX_FILES) break;
-  }
-  return { mode: "repository", files: await readSources(repoPath, paths) };
-}
-async function listedChangeDiscovery(repoPath, changedFiles, base) {
-  const files = [];
-  for (const raw of changedFiles) {
-    if (files.length >= MAX_FILES) break;
-    const path = raw.replaceAll("\\", "/");
-    if (!domain.includePath(path)) continue;
-    const current = await safeRead(join3(repoPath, path));
-    if (current === void 0) continue;
-    const tracked = await isTracked(repoPath, path);
-    if (!tracked) {
-      files.push({ path, current, changedLines: /* @__PURE__ */ new Set(), status: "added" });
-      continue;
-    }
-    const changedLines = await changedLineNumbers(repoPath, base, path);
-    files.push({
-      path,
-      current,
-      changedLines,
-      status: changedLines.size === 0 ? "added" : "modified"
-    });
-  }
-  return { mode: "diff", base, files };
-}
-async function isTracked(repoPath, path) {
-  try {
-    const out2 = await gitOutput(repoPath, ["ls-files", "--", path]);
-    return out2.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-async function diffDiscovery(repoPath, base, names) {
-  const records = parseNameStatus(names).filter((record) => record.status !== "D" && domain.includePath(record.path)).slice(0, MAX_FILES);
-  const files = [];
-  for (const record of records) {
-    const current = await safeRead(join3(repoPath, record.path));
-    if (current === void 0) continue;
-    files.push({
-      path: record.path,
-      current,
-      changedLines: await changedLineNumbers(repoPath, base, record.path),
-      status: record.status === "A" ? "added" : "modified"
-    });
-  }
-  return { mode: "diff", base, files };
-}
-async function readSources(repoPath, paths) {
-  const files = [];
-  for (const path of paths) {
-    const current = await safeRead(join3(repoPath, path));
-    if (current === void 0) continue;
-    files.push({ path, current, changedLines: /* @__PURE__ */ new Set(), status: "repository" });
-  }
-  return files;
-}
-async function repositoryFiles(repoPath) {
-  const files = [];
-  async function visit(directory) {
-    if (files.length >= MAX_FILES) return;
-    let entries;
-    try {
-      entries = await readdir3(join3(repoPath, directory), { withFileTypes: true });
-    } catch {
-      return;
-    }
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      if (files.length >= MAX_FILES) return;
-      const relativePath = directory === "" ? entry.name : join3(directory, entry.name);
-      const posix = relativePath.split(sep2).join("/");
-      if (entry.isDirectory()) {
-        if (!IGNORED_DIRECTORIES.has(entry.name)) await visit(posix);
-        continue;
-      }
-      if (domain.includePath(posix)) files.push(posix);
-    }
-  }
-  await visit("");
-  return files;
-}
-async function changedLineNumbers(repoPath, base, path) {
-  const lines = /* @__PURE__ */ new Set();
-  try {
-    const patch = await gitOutput(repoPath, ["diff", "--unified=0", base, "--", path]);
-    let newLine = 0;
-    for (const line of patch.split("\n")) {
-      const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-      if (header) {
-        newLine = Number(header[1]);
-        continue;
-      }
-      if (line.startsWith("+") && !line.startsWith("+++")) {
-        lines.add(newLine);
-        newLine += 1;
-      } else if (line.startsWith("-") && !line.startsWith("---")) {
-      } else if (!line.startsWith("\\")) {
-        newLine += 1;
-      }
-    }
-  } catch {
-  }
-  return lines;
-}
-function parseNameStatus(names) {
-  return names.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
-    const parts2 = line.split("	");
-    const status = (parts2[0] ?? "M")[0] ?? "M";
-    const path = parts2.length > 2 ? parts2[2] : parts2[1] ?? "";
-    return { status, path };
-  }).filter((record) => record.path.length > 0);
-}
-async function chooseBase(repoPath) {
-  for (const candidate of ["main", "master", "trunk", "origin/main", "origin/master"]) {
-    if (await revisionExists(repoPath, candidate)) {
-      const head = await gitOutput(repoPath, ["rev-parse", "HEAD"]);
-      const base = await gitOutput(repoPath, ["rev-parse", candidate]);
-      if (head.trim() !== base.trim()) return candidate;
-    }
-  }
-  return void 0;
-}
-async function isGitRepository(repoPath) {
-  try {
-    await gitOutput(repoPath, ["rev-parse", "--is-inside-work-tree"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function revisionExists(repoPath, rev) {
-  try {
-    await gitOutput(repoPath, ["rev-parse", "--verify", rev]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function gitOutput(repoPath, args2) {
-  const { stdout } = await execute("git", ["-C", repoPath, ...args2], {
-    maxBuffer: 20 * 1024 * 1024,
-    encoding: "utf8"
+async function discoverSources(ctx) {
+  const sources = await ctx.loadInScopeSources({
+    include: domain.includePath,
+    limit: MAX_FILES,
+    maxBytes: MAX_FILE_BYTES
   });
-  return stdout;
-}
-async function safeRead(path) {
-  try {
-    const buffer = await readFile3(path);
-    if (buffer.byteLength > MAX_FILE_BYTES) return void 0;
-    if (buffer.includes(0)) return void 0;
-    return buffer.toString("utf8");
-  } catch {
-    return void 0;
-  }
+  const wholeTarget = ctx.change === null || ctx.change.scanMode === "all";
+  const files = sources.map((source) => ({
+    path: source.path,
+    current: source.content,
+    // Full-file eligibility: platform already scoped the change; do not re-diff.
+    changedLines: /* @__PURE__ */ new Set(),
+    status: source.status === "repository" ? "repository" : "added"
+  }));
+  return {
+    mode: wholeTarget ? "repository" : "diff",
+    ...ctx.change?.baseRef === void 0 ? {} : { base: ctx.change.baseRef },
+    files
+  };
 }
 
 // src/model-review.ts
@@ -22073,7 +21990,7 @@ function createApp() {
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
   app.rule("go-security.review", async (ctx) => {
-    const discovery = await discoverSources(ctx.repoPath, ctx.change);
+    const discovery = await discoverSources(ctx);
     const analysis = await analyzeDiscovery(discovery);
     ctx.summary.files_scanned = analysis.filesScanned;
     if (analysis.parseErrors.length > 0) {
