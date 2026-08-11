@@ -15,6 +15,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
         try {
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
+          signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -35,6 +36,104 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+function variableTimeCredentialComparisonSignals(file: SourceRevision, root: Node): Signal[] {
+  if (file.path.endsWith("_test.go")) return [];
+  const signals: Signal[] = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration"),
+  ];
+
+  for (const fn of functions) {
+    const functionText = sourceText(fn, file.current);
+    if (!/\.Header\.Get\s*\(/.test(functionText)) continue;
+
+    const credentialAliases = credentialHeaderAliases(functionText);
+    const nameNode = fn.childForFieldName("name");
+    const functionName = nameNode === null ? "function" : sourceText(nameNode, file.current);
+
+    for (const comparison of descendants(fn, "binary_expression")) {
+      const leftNode = comparison.childForFieldName("left");
+      const rightNode = comparison.childForFieldName("right");
+      if (leftNode === null || rightNode === null) continue;
+      const between = file.current.slice(leftNode.endIndex, rightNode.startIndex).trim();
+      if (between !== "==" && between !== "!=") continue;
+
+      const left = sourceText(leftNode, file.current).trim();
+      const right = sourceText(rightNode, file.current).trim();
+      const leftHeader = credentialHeader(left, credentialAliases);
+      const rightHeader = credentialHeader(right, credentialAliases);
+      const secret = leftHeader !== undefined && isSecretLikeExpression(right)
+        ? right
+        : rightHeader !== undefined && isSecretLikeExpression(left)
+          ? left
+          : undefined;
+      const header = leftHeader ?? rightHeader;
+      if (header === undefined || secret === undefined) continue;
+
+      signals.push({
+        ruleId: "go-security.crypto.constant-time",
+        path: file.path,
+        line: comparison.startPosition.row + 1,
+        message:
+          `${functionName} compares attacker-supplied ${header} to ${secret} with ${between}; use a constant-time credential comparison.`,
+        snippet: sourceText(comparison, file.current).trim().slice(0, 300),
+        data: { function: functionName, header, secret, operator: between },
+      });
+    }
+  }
+  return signals.filter((item) => changed(file, item.line, item.endLine));
+}
+
+function credentialHeaderAliases(functionText: string): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const assignment = /\b([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*([^\n;]*\.Header\.Get\s*\([^\n;]+\))/g;
+  let match: RegExpExecArray | null;
+  while ((match = assignment.exec(functionText)) !== null) {
+    const alias = match[1];
+    const expression = match[2];
+    if (alias === undefined || expression === undefined) continue;
+    const escapedAlias = escapeRegExp(alias);
+    const assignments = functionText.match(new RegExp(`\\b${escapedAlias}\\s*(?::=|=(?!=))`, "g")) ?? [];
+    if (assignments.length !== 1) continue;
+    const header = credentialHeader(expression, new Map());
+    if (header !== undefined) aliases.set(alias, header);
+  }
+  return aliases;
+}
+
+function credentialHeader(expression: string, aliases: Map<string, string>): string | undefined {
+  const normalized = stripOuterParentheses(expression);
+  const alias = aliases.get(normalized);
+  if (alias !== undefined) return alias;
+  const match = normalized.match(/\.Header\.Get\s*\(\s*["`]([^"`]+)["`]\s*\)/);
+  const header = match?.[1];
+  if (header === undefined) return undefined;
+  const lower = header.toLowerCase();
+  if (lower === "authorization" || lower === "proxy-authorization" ||
+      /(?:signature|token|secret|api[-_]?key|webhook[-_]?key)/.test(lower)) {
+    return header;
+  }
+  return undefined;
+}
+
+function isSecretLikeExpression(expression: string): boolean {
+  const normalized = stripOuterParentheses(expression);
+  if (!/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/.test(normalized)) return false;
+  const name = normalized.split(".").at(-1) ?? "";
+  return /^(?:secret|token|signature|password|credential|apiKey|webhookKey|sharedKey)s?$/i.test(name) ||
+    /(?:Secret|Token|Signature|Password|Credential|APIKey|WebhookKey|SharedKey)s?$/.test(name) ||
+    /(?:^|_)(?:secret|token|signature|password|credential|api_?key|webhook_?key|shared_?key)s?$/i.test(name);
+}
+
+function stripOuterParentheses(expression: string): string {
+  let normalized = expression.trim();
+  while (normalized.startsWith("(") && normalized.endsWith(")")) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
 }
 
 function nilAttestationSubjectSignals(file: SourceRevision, root: Node): Signal[] {

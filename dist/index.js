@@ -17311,6 +17311,18 @@ var domain = {
       whyItMatters: "A null element violates the signed statement structure and must not be normalized away during verification.",
       impact: "Verifier behavior diverges from the attestation schema and may process a malformed statement when another subject matches.",
       recommendation: "Return an explicit invalid-statement error when a subject element is nil."
+    },
+    {
+      id: "go-security.crypto.constant-time",
+      title: "Webhook credential uses a variable-time comparison",
+      concern: "variable-time comparison of an attacker-supplied webhook credential",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} webhook credential comparison${count === 1 ? "" : "s"} use == or != against a configured secret.`,
+      whyItMatters: "Authentication and signature values supplied by a remote caller should not be compared with operators that may reveal matching-prefix information through timing.",
+      impact: "An attacker able to make repeated requests and measure response time may recover a long-lived webhook credential incrementally.",
+      recommendation: "Use crypto/subtle.ConstantTimeCompare for shared-secret headers or hmac.Equal for message authentication codes."
     }
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
@@ -21491,6 +21503,7 @@ async function analyzeDiscovery(discovery) {
         try {
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
+          signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -21510,6 +21523,86 @@ async function analyzeDiscovery(discovery) {
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+function variableTimeCredentialComparisonSignals(file, root) {
+  if (file.path.endsWith("_test.go")) return [];
+  const signals = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration")
+  ];
+  for (const fn of functions) {
+    const functionText = sourceText(fn, file.current);
+    if (!/\.Header\.Get\s*\(/.test(functionText)) continue;
+    const credentialAliases = credentialHeaderAliases(functionText);
+    const nameNode = fn.childForFieldName("name");
+    const functionName = nameNode === null ? "function" : sourceText(nameNode, file.current);
+    for (const comparison of descendants(fn, "binary_expression")) {
+      const leftNode = comparison.childForFieldName("left");
+      const rightNode = comparison.childForFieldName("right");
+      if (leftNode === null || rightNode === null) continue;
+      const between = file.current.slice(leftNode.endIndex, rightNode.startIndex).trim();
+      if (between !== "==" && between !== "!=") continue;
+      const left = sourceText(leftNode, file.current).trim();
+      const right = sourceText(rightNode, file.current).trim();
+      const leftHeader = credentialHeader(left, credentialAliases);
+      const rightHeader = credentialHeader(right, credentialAliases);
+      const secret = leftHeader !== void 0 && isSecretLikeExpression(right) ? right : rightHeader !== void 0 && isSecretLikeExpression(left) ? left : void 0;
+      const header = leftHeader ?? rightHeader;
+      if (header === void 0 || secret === void 0) continue;
+      signals.push({
+        ruleId: "go-security.crypto.constant-time",
+        path: file.path,
+        line: comparison.startPosition.row + 1,
+        message: `${functionName} compares attacker-supplied ${header} to ${secret} with ${between}; use a constant-time credential comparison.`,
+        snippet: sourceText(comparison, file.current).trim().slice(0, 300),
+        data: { function: functionName, header, secret, operator: between }
+      });
+    }
+  }
+  return signals.filter((item) => changed(file, item.line, item.endLine));
+}
+function credentialHeaderAliases(functionText) {
+  const aliases = /* @__PURE__ */ new Map();
+  const assignment = /\b([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*([^\n;]*\.Header\.Get\s*\([^\n;]+\))/g;
+  let match;
+  while ((match = assignment.exec(functionText)) !== null) {
+    const alias = match[1];
+    const expression = match[2];
+    if (alias === void 0 || expression === void 0) continue;
+    const escapedAlias = escapeRegExp(alias);
+    const assignments = functionText.match(new RegExp(`\\b${escapedAlias}\\s*(?::=|=(?!=))`, "g")) ?? [];
+    if (assignments.length !== 1) continue;
+    const header = credentialHeader(expression, /* @__PURE__ */ new Map());
+    if (header !== void 0) aliases.set(alias, header);
+  }
+  return aliases;
+}
+function credentialHeader(expression, aliases) {
+  const normalized = stripOuterParentheses(expression);
+  const alias = aliases.get(normalized);
+  if (alias !== void 0) return alias;
+  const match = normalized.match(/\.Header\.Get\s*\(\s*["`]([^"`]+)["`]\s*\)/);
+  const header = match?.[1];
+  if (header === void 0) return void 0;
+  const lower = header.toLowerCase();
+  if (lower === "authorization" || lower === "proxy-authorization" || /(?:signature|token|secret|api[-_]?key|webhook[-_]?key)/.test(lower)) {
+    return header;
+  }
+  return void 0;
+}
+function isSecretLikeExpression(expression) {
+  const normalized = stripOuterParentheses(expression);
+  if (!/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/.test(normalized)) return false;
+  const name2 = normalized.split(".").at(-1) ?? "";
+  return /^(?:secret|token|signature|password|credential|apiKey|webhookKey|sharedKey)s?$/i.test(name2) || /(?:Secret|Token|Signature|Password|Credential|APIKey|WebhookKey|SharedKey)s?$/.test(name2) || /(?:^|_)(?:secret|token|signature|password|credential|api_?key|webhook_?key|shared_?key)s?$/i.test(name2);
+}
+function stripOuterParentheses(expression) {
+  let normalized = expression.trim();
+  while (normalized.startsWith("(") && normalized.endsWith(")")) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
 }
 function nilAttestationSubjectSignals(file, root) {
   const signals = [];

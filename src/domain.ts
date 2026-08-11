@@ -217,6 +217,22 @@ export const domain: DomainDefinition = {
         "Verifier behavior diverges from the attestation schema and may process a malformed statement when another subject matches.",
       recommendation: "Return an explicit invalid-statement error when a subject element is nil.",
     },
+    {
+      id: "go-security.crypto.constant-time",
+      title: "Webhook credential uses a variable-time comparison",
+      concern: "variable-time comparison of an attacker-supplied webhook credential",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        `${count} webhook credential comparison${count === 1 ? "" : "s"} use == or != against a configured secret.`,
+      whyItMatters:
+        "Authentication and signature values supplied by a remote caller should not be compared with operators that may reveal matching-prefix information through timing.",
+      impact:
+        "An attacker able to make repeated requests and measure response time may recover a long-lived webhook credential incrementally.",
+      recommendation:
+        "Use crypto/subtle.ConstantTimeCompare for shared-secret headers or hmac.Equal for message authentication codes.",
+    },
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
   approvalSummary: "I would approve the reviewed security boundaries represented by this change.",
