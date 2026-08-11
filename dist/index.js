@@ -17299,6 +17299,18 @@ var domain = {
       whyItMatters: "pprof leaks process memory and profiles to remote callers.",
       impact: "Attackers can extract secrets and reverse engineer internals.",
       recommendation: "Bind pprof to localhost or protect it with authentication and network policy."
+    },
+    {
+      id: "go-security.attestation.null-subject-skip",
+      title: "A signed attestation verifier skips a null subject",
+      concern: "malformed signed attestation subjects accepted by verifier logic",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} signed-attestation verification loop${count === 1 ? "" : "s"} skip null subject entries.`,
+      whyItMatters: "A null element violates the signed statement structure and must not be normalized away during verification.",
+      impact: "Verifier behavior diverges from the attestation schema and may process a malformed statement when another subject matches.",
+      recommendation: "Return an explicit invalid-statement error when a subject element is nil."
     }
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
@@ -21444,6 +21456,28 @@ async function parseGo(source) {
   if (tree === null) throw new Error("Tree-sitter returned no syntax tree");
   return tree;
 }
+function walk2(node, visit) {
+  const pending = [node];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === void 0) continue;
+    visit(current);
+    for (let index = current.namedChildCount - 1; index >= 0; index -= 1) {
+      const child = current.namedChild(index);
+      if (child !== null) pending.push(child);
+    }
+  }
+}
+function descendants(node, type) {
+  const result = [];
+  walk2(node, (candidate) => {
+    if (candidate.type === type) result.push(candidate);
+  });
+  return result;
+}
+function sourceText(node, source) {
+  return source.slice(node.startIndex, node.endIndex);
+}
 
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
@@ -21456,6 +21490,7 @@ async function analyzeDiscovery(discovery) {
         const tree = await parseGo(file.current);
         try {
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
+          signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -21475,6 +21510,52 @@ async function analyzeDiscovery(discovery) {
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+function nilAttestationSubjectSignals(file, root) {
+  const signals = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration")
+  ];
+  for (const fn of functions) {
+    const nameNode = fn.childForFieldName("name");
+    if (nameNode === null) continue;
+    const functionName = sourceText(nameNode, file.current);
+    if (!/(?:verif|valid|claim)/i.test(functionName)) continue;
+    const functionText = sourceText(fn, file.current);
+    if (!/(?:attest|in[-_]?toto|statement)/i.test(functionText)) continue;
+    for (const loop of descendants(fn, "for_statement")) {
+      const loopText = sourceText(loop, file.current);
+      const range = loopText.match(
+        /^for\s+(?:[^,\n]+,\s*)?([A-Za-z_]\w*)\s*:=\s*range\s+([A-Za-z_][\w.]*Subject(?:s)?)\s*\{/
+      );
+      const element = range?.[1];
+      const collection = range?.[2];
+      if (element === void 0 || collection === void 0) continue;
+      for (const condition of descendants(loop, "if_statement")) {
+        const conditionText = sourceText(condition, file.current);
+        const escapedElement = escapeRegExp(element);
+        const nilGuard = new RegExp(
+          `^if\\s+(?:${escapedElement}\\s*==\\s*nil|nil\\s*==\\s*${escapedElement})\\s*\\{`
+        );
+        if (!nilGuard.test(conditionText)) continue;
+        const continuation = descendants(condition, "continue_statement")[0];
+        if (continuation === void 0) continue;
+        signals.push({
+          ruleId: "go-security.attestation.null-subject-skip",
+          path: file.path,
+          line: continuation.startPosition.row + 1,
+          message: `${functionName} skips a nil element from ${collection}; a null subject makes the signed statement structurally invalid and should return an error.`,
+          snippet: conditionText.trim().slice(0, 300),
+          data: { function: functionName, element, collection }
+        });
+      }
+    }
+  }
+  return signals;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function changed(file, line, endLine = line) {
   if (file.status === "repository" || file.status === "added") return true;

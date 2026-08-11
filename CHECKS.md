@@ -178,6 +178,21 @@ Regression entry: [`test/p0-catalog.test.ts`](test/p0-catalog.test.ts) (P0 subse
 
 ---
 
+## Medium
+
+### `go-security.attestation.null-subject-skip`
+
+| | |
+| --- | --- |
+| **What** | A signed-attestation or statement verifier encounters a nil subject element and uses `continue` instead of rejecting the malformed statement |
+| **Why** | A null subject violates the signed statement structure; verifier code should validate signed content fail-closed rather than normalize it |
+| **Looks for** | A changed `continue` inside a nil guard for an element ranged from a subject collection, within an attestation/statement verification function |
+| **Stays quiet when** | The nil branch returns an error; optional algorithms, annotations, or extensions are skipped; code is a parser or cleanup path rather than verification |
+| **Fixture** | `fixtures/attestation-null-subject/` |
+| **Remediation** | Return an explicit invalid-statement error for the nil element |
+
+---
+
 ## Explicitly not this adversary
 
 | Concern | Where it lives |

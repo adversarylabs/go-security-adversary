@@ -202,6 +202,21 @@ export const domain: DomainDefinition = {
       impact: "Attackers can extract secrets and reverse engineer internals.",
       recommendation: "Bind pprof to localhost or protect it with authentication and network policy.",
     },
+    {
+      id: "go-security.attestation.null-subject-skip",
+      title: "A signed attestation verifier skips a null subject",
+      concern: "malformed signed attestation subjects accepted by verifier logic",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        `${count} signed-attestation verification loop${count === 1 ? "" : "s"} skip null subject entries.`,
+      whyItMatters:
+        "A null element violates the signed statement structure and must not be normalized away during verification.",
+      impact:
+        "Verifier behavior diverges from the attestation schema and may process a malformed statement when another subject matches.",
+      recommendation: "Return an explicit invalid-statement error when a subject element is nil.",
+    },
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
   approvalSummary: "I would approve the reviewed security boundaries represented by this change.",
