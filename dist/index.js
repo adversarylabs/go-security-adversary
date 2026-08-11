@@ -21534,10 +21534,11 @@ function variableTimeCredentialComparisonSignals(file, root) {
   for (const fn of functions) {
     const functionText = sourceText(fn, file.current);
     if (!/\.Header\.Get\s*\(/.test(functionText)) continue;
-    const credentialAliases = credentialHeaderAliases(functionText);
+    const credentialAliases = credentialHeaderAliases(fn, file.current);
     const nameNode = fn.childForFieldName("name");
     const functionName = nameNode === null ? "function" : sourceText(nameNode, file.current);
     for (const comparison of descendants(fn, "binary_expression")) {
+      if (!belongsDirectlyToFunction(comparison, fn)) continue;
       const leftNode = comparison.childForFieldName("left");
       const rightNode = comparison.childForFieldName("right");
       if (leftNode === null || rightNode === null) continue;
@@ -21562,21 +21563,84 @@ function variableTimeCredentialComparisonSignals(file, root) {
   }
   return signals.filter((item) => changed(file, item.line, item.endLine));
 }
-function credentialHeaderAliases(functionText) {
+function credentialHeaderAliases(fn, source) {
+  const writes = /* @__PURE__ */ new Map();
+  const candidates = [];
+  const recordWrites = (names, at) => {
+    for (const name2 of names) {
+      if (name2 === "_") continue;
+      const locations = writes.get(name2) ?? [];
+      locations.push(at);
+      writes.set(name2, locations);
+    }
+  };
+  for (const node of descendants(fn, "short_var_declaration")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const names = directIdentifiers(node.childForFieldName("left"), source);
+    recordWrites(names, node.startIndex);
+    const expression = singleExpression(node.childForFieldName("right"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), /* @__PURE__ */ new Map());
+    if (header !== void 0) candidates.push({ alias: names[0], header, endIndex: node.endIndex });
+  }
+  for (const node of descendants(fn, "assignment_statement")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const names = directIdentifiers(node.childForFieldName("left"), source);
+    recordWrites(names, node.startIndex);
+    const operator = node.childForFieldName("operator");
+    if (operator === null || sourceText(operator, source) !== "=") continue;
+    const expression = singleExpression(node.childForFieldName("right"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), /* @__PURE__ */ new Map());
+    if (header !== void 0) candidates.push({ alias: names[0], header, endIndex: node.endIndex });
+  }
+  for (const node of descendants(fn, "var_spec")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const nameNode = node.childForFieldName("name");
+    const names = directIdentifiers(nameNode, source);
+    recordWrites(names, node.startIndex);
+    const expression = singleExpression(node.childForFieldName("value"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), /* @__PURE__ */ new Map());
+    if (header !== void 0) candidates.push({ alias: names[0], header, endIndex: node.endIndex });
+  }
+  for (const type of ["inc_statement", "range_clause"]) {
+    for (const node of descendants(fn, type)) {
+      if (!belongsDirectlyToFunction(node, fn)) continue;
+      const target = type === "range_clause" ? node.childForFieldName("left") : node.namedChild(0);
+      recordWrites(directIdentifiers(target, source), node.startIndex);
+    }
+  }
   const aliases = /* @__PURE__ */ new Map();
-  const assignment = /\b([A-Za-z_]\w*)\s*(?::=|=(?!=))\s*([^\n;]*\.Header\.Get\s*\([^\n;]+\))/g;
-  let match;
-  while ((match = assignment.exec(functionText)) !== null) {
-    const alias = match[1];
-    const expression = match[2];
-    if (alias === void 0 || expression === void 0) continue;
-    const escapedAlias = escapeRegExp(alias);
-    const assignments = functionText.match(new RegExp(`\\b${escapedAlias}\\s*(?::=|=(?!=))`, "g")) ?? [];
-    if (assignments.length !== 1) continue;
-    const header = credentialHeader(expression, /* @__PURE__ */ new Map());
-    if (header !== void 0) aliases.set(alias, header);
+  for (const candidate of candidates) {
+    const laterMutation = (writes.get(candidate.alias) ?? []).some((at) => at >= candidate.endIndex);
+    if (!laterMutation) aliases.set(candidate.alias, candidate.header);
   }
   return aliases;
+}
+function directIdentifiers(node, source) {
+  if (node === null) return [];
+  if (node.type === "identifier") return [sourceText(node, source)];
+  if (node.type !== "expression_list") return [];
+  const result = [];
+  for (const child of node.namedChildren) {
+    if (child.type !== "identifier") return [];
+    result.push(sourceText(child, source));
+  }
+  return result;
+}
+function singleExpression(node) {
+  if (node === null) return null;
+  if (node.type !== "expression_list") return node;
+  return node.namedChildCount === 1 ? node.namedChild(0) : null;
+}
+function belongsDirectlyToFunction(node, fn) {
+  for (let parent = node.parent; parent !== null && parent.id !== fn.id; parent = parent.parent) {
+    if (parent.type === "func_literal" || parent.type === "function_declaration" || parent.type === "method_declaration") {
+      return false;
+    }
+  }
+  return true;
 }
 function credentialHeader(expression, aliases) {
   const normalized = stripOuterParentheses(expression);

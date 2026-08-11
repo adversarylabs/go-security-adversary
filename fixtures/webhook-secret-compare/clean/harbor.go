@@ -30,3 +30,20 @@ func isJSON(request *http.Request) bool {
 func hasBearerScheme(request *http.Request, tokenType string) bool {
 	return request.Header.Get("Authorization") == tokenType
 }
+
+func mutatesHeaderAlias(request *http.Request, configuredSecret string) bool {
+	provided := request.Header.Get("Authorization")
+	provided += "-normalized"
+	return provided == configuredSecret
+}
+
+func headerReadOnlyInComment(provided, configuredSecret string) bool {
+	// provided := request.Header.Get("Authorization")
+	return provided == configuredSecret
+}
+
+func headerReadOnlyInString(provided, configuredSecret string) bool {
+	example := `provided := request.Header.Get("X-Webhook-Signature")`
+	_ = example
+	return provided == configuredSecret
+}

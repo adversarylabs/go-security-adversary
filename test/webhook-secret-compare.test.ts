@@ -17,7 +17,7 @@ test("flags direct and aliased webhook credential comparisons", async () => {
   assert.match(finding.evidence[1]!.message ?? "", /X-Webhook-Signature/);
 });
 
-test("keeps constant-time checks, empty-secret guards, and ordinary headers clean", async () => {
+test("keeps constant-time checks and non-proven credential aliases clean", async () => {
   const result = await reviewFixture("clean");
   assert.equal(result.findings.some((item) => item.ruleId === ruleId), false);
 });
