@@ -530,7 +530,7 @@ Go trust-boundary security: TLS, crypto, injection, authn/z, and secret handling
 
 **What it is.** Comparing MACs, tokens, or signatures with `==` / `bytes.Equal` admits timing side channels; should be `hmac.Equal` / `subtle.ConstantTimeCompare`.
 
-**Static detection.** Comparisons where an operand traces to hmac.Sum, or identifiers named signature/mac/token/apiKey compared with == in handler paths.
+**Static detection.** Changed `==` / `!=` expressions where one operand is an authentication or signature HTTP header (directly or through one unmodified local alias) and the other is a secret-like identifier.
 
 **LLM role.** Is the comparison attacker-observable (network handler) vs local config check?
 
@@ -539,6 +539,7 @@ Go trust-boundary security: TLS, crypto, injection, authn/z, and secret handling
 **Public examples of the bad pattern:**
   - https://pkg.go.dev/crypto/subtle#ConstantTimeCompare
   - https://pkg.go.dev/crypto/hmac#Equal
+  - https://github.com/argoproj/argo-cd/pull/27884#discussion_r3257647841 — human review of a webhook Authorization header compared with `==`
   - https://github.com/OWASP/Go-SCP
 
 ---

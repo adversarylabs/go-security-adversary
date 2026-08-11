@@ -15,6 +15,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
         try {
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
+          signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -35,6 +36,177 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+function variableTimeCredentialComparisonSignals(file: SourceRevision, root: Node): Signal[] {
+  if (file.path.endsWith("_test.go")) return [];
+  const signals: Signal[] = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration"),
+  ];
+
+  for (const fn of functions) {
+    const functionText = sourceText(fn, file.current);
+    if (!/\.Header\.Get\s*\(/.test(functionText)) continue;
+
+    const credentialAliases = credentialHeaderAliases(fn, file.current);
+    const nameNode = fn.childForFieldName("name");
+    const functionName = nameNode === null ? "function" : sourceText(nameNode, file.current);
+
+    for (const comparison of descendants(fn, "binary_expression")) {
+      if (!belongsDirectlyToFunction(comparison, fn)) continue;
+      const leftNode = comparison.childForFieldName("left");
+      const rightNode = comparison.childForFieldName("right");
+      if (leftNode === null || rightNode === null) continue;
+      const between = file.current.slice(leftNode.endIndex, rightNode.startIndex).trim();
+      if (between !== "==" && between !== "!=") continue;
+
+      const left = sourceText(leftNode, file.current).trim();
+      const right = sourceText(rightNode, file.current).trim();
+      const leftHeader = credentialHeader(left, credentialAliases);
+      const rightHeader = credentialHeader(right, credentialAliases);
+      const secret = leftHeader !== undefined && isSecretLikeExpression(right)
+        ? right
+        : rightHeader !== undefined && isSecretLikeExpression(left)
+          ? left
+          : undefined;
+      const header = leftHeader ?? rightHeader;
+      if (header === undefined || secret === undefined) continue;
+
+      signals.push({
+        ruleId: "go-security.crypto.constant-time",
+        path: file.path,
+        line: comparison.startPosition.row + 1,
+        message:
+          `${functionName} compares attacker-supplied ${header} to ${secret} with ${between}; use a constant-time credential comparison.`,
+        snippet: sourceText(comparison, file.current).trim().slice(0, 300),
+        data: { function: functionName, header, secret, operator: between },
+      });
+    }
+  }
+  return signals.filter((item) => changed(file, item.line, item.endLine));
+}
+
+function credentialHeaderAliases(fn: Node, source: string): Map<string, string> {
+  const writes = new Map<string, number[]>();
+  const candidates: Array<{ alias: string; header: string; endIndex: number }> = [];
+
+  const recordWrites = (names: string[], at: number): void => {
+    for (const name of names) {
+      if (name === "_") continue;
+      const locations = writes.get(name) ?? [];
+      locations.push(at);
+      writes.set(name, locations);
+    }
+  };
+
+  for (const node of descendants(fn, "short_var_declaration")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const names = directIdentifiers(node.childForFieldName("left"), source);
+    recordWrites(names, node.startIndex);
+    const expression = singleExpression(node.childForFieldName("right"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), new Map());
+    if (header !== undefined) candidates.push({ alias: names[0]!, header, endIndex: node.endIndex });
+  }
+
+  for (const node of descendants(fn, "assignment_statement")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const names = directIdentifiers(node.childForFieldName("left"), source);
+    recordWrites(names, node.startIndex);
+    const operator = node.childForFieldName("operator");
+    if (operator === null || sourceText(operator, source) !== "=") continue;
+    const expression = singleExpression(node.childForFieldName("right"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), new Map());
+    if (header !== undefined) candidates.push({ alias: names[0]!, header, endIndex: node.endIndex });
+  }
+
+  for (const node of descendants(fn, "var_spec")) {
+    if (!belongsDirectlyToFunction(node, fn)) continue;
+    const nameNode = node.childForFieldName("name");
+    const names = directIdentifiers(nameNode, source);
+    recordWrites(names, node.startIndex);
+    const expression = singleExpression(node.childForFieldName("value"));
+    if (names.length !== 1 || expression === null) continue;
+    const header = credentialHeader(sourceText(expression, source), new Map());
+    if (header !== undefined) candidates.push({ alias: names[0]!, header, endIndex: node.endIndex });
+  }
+
+  for (const type of ["inc_statement", "range_clause"]) {
+    for (const node of descendants(fn, type)) {
+      if (!belongsDirectlyToFunction(node, fn)) continue;
+      const target = type === "range_clause" ? node.childForFieldName("left") : node.namedChild(0);
+      recordWrites(directIdentifiers(target, source), node.startIndex);
+    }
+  }
+
+  const aliases = new Map<string, string>();
+  for (const candidate of candidates) {
+    const laterMutation = (writes.get(candidate.alias) ?? []).some((at) => at >= candidate.endIndex);
+    if (!laterMutation) aliases.set(candidate.alias, candidate.header);
+  }
+  return aliases;
+}
+
+function directIdentifiers(node: Node | null, source: string): string[] {
+  if (node === null) return [];
+  if (node.type === "identifier") return [sourceText(node, source)];
+  if (node.type !== "expression_list") return [];
+  const result: string[] = [];
+  for (const child of node.namedChildren) {
+    if (child.type !== "identifier") return [];
+    result.push(sourceText(child, source));
+  }
+  return result;
+}
+
+function singleExpression(node: Node | null): Node | null {
+  if (node === null) return null;
+  if (node.type !== "expression_list") return node;
+  return node.namedChildCount === 1 ? node.namedChild(0) : null;
+}
+
+function belongsDirectlyToFunction(node: Node, fn: Node): boolean {
+  for (let parent = node.parent; parent !== null && parent.id !== fn.id; parent = parent.parent) {
+    if (parent.type === "func_literal" || parent.type === "function_declaration" || parent.type === "method_declaration") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function credentialHeader(expression: string, aliases: Map<string, string>): string | undefined {
+  const normalized = stripOuterParentheses(expression);
+  const alias = aliases.get(normalized);
+  if (alias !== undefined) return alias;
+  const match = normalized.match(/\.Header\.Get\s*\(\s*["`]([^"`]+)["`]\s*\)/);
+  const header = match?.[1];
+  if (header === undefined) return undefined;
+  const lower = header.toLowerCase();
+  if (lower === "authorization" || lower === "proxy-authorization" ||
+      /(?:signature|token|secret|api[-_]?key|webhook[-_]?key)/.test(lower)) {
+    return header;
+  }
+  return undefined;
+}
+
+function isSecretLikeExpression(expression: string): boolean {
+  const normalized = stripOuterParentheses(expression);
+  if (!/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/.test(normalized)) return false;
+  const name = normalized.split(".").at(-1) ?? "";
+  return /^(?:secret|token|signature|password|credential|apiKey|webhookKey|sharedKey)s?$/i.test(name) ||
+    /(?:Secret|Token|Signature|Password|Credential|APIKey|WebhookKey|SharedKey)s?$/.test(name) ||
+    /(?:^|_)(?:secret|token|signature|password|credential|api_?key|webhook_?key|shared_?key)s?$/i.test(name);
+}
+
+function stripOuterParentheses(expression: string): string {
+  let normalized = expression.trim();
+  while (normalized.startsWith("(") && normalized.endsWith(")")) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
 }
 
 function nilAttestationSubjectSignals(file: SourceRevision, root: Node): Signal[] {
