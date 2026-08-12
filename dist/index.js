@@ -17323,6 +17323,18 @@ var domain = {
       whyItMatters: "Authentication and signature values supplied by a remote caller should not be compared with operators that may reveal matching-prefix information through timing.",
       impact: "An attacker able to make repeated requests and measure response time may recover a long-lived webhook credential incrementally.",
       recommendation: "Use crypto/subtle.ConstantTimeCompare for shared-secret headers or hmac.Equal for message authentication codes."
+    },
+    {
+      id: "go-security.cookie.auth-httponly",
+      title: "An authentication cookie is readable by browser scripts",
+      concern: "authentication and session cookies emitted without HttpOnly",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} authentication cookie${count === 1 ? " is" : "s are"} emitted without HttpOnly protection.`,
+      whyItMatters: "Authentication cookies contain reusable credentials and normally have no reason to be visible to browser JavaScript.",
+      impact: "A script running in the origin, including one introduced through XSS, can steal the cookie and replay the user's session.",
+      recommendation: "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie."
     }
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
@@ -21522,6 +21534,7 @@ async function analyzeDiscovery(discovery) {
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
+          signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -21541,6 +21554,115 @@ async function analyzeDiscovery(discovery) {
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+function authenticationCookieHttpOnlySignals(file, root) {
+  const signals = [];
+  const seen = /* @__PURE__ */ new Set();
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration")
+  ];
+  for (const fn of functions) {
+    for (const call of descendants(fn, "call_expression")) {
+      if (!belongsDirectlyToFunction(call, fn)) continue;
+      const callable = call.childForFieldName("function");
+      const args2 = call.childForFieldName("arguments");
+      if (callable === null || args2 === null || sourceText(callable, file.current).trim() !== "http.SetCookie") continue;
+      const cookieArg = args2.namedChild(args2.namedChildCount - 1);
+      if (cookieArg === null) continue;
+      const literal = cookieArg.type === "identifier" ? latestCookieLiteralForAlias(fn, sourceText(cookieArg, file.current), call.startIndex, file.current) : findHTTPCookieLiteral(cookieArg, file.current);
+      if (literal === void 0 || seen.has(literal.startIndex)) continue;
+      const nameField = cookieField(literal, "Name", file.current);
+      if (nameField === void 0) continue;
+      const cookieName = stringLiteralValue(nameField.value, file.current);
+      if (cookieName === void 0 || !isAuthenticationCookieName(cookieName)) continue;
+      const valueField = cookieField(literal, "Value", file.current);
+      if (valueField === void 0 || stringLiteralValue(valueField.value, file.current) === "") continue;
+      const maxAge = cookieField(literal, "MaxAge", file.current);
+      if (maxAge !== void 0 && /^-\s*1$/.test(sourceText(maxAge.value, file.current).trim())) continue;
+      const httpOnly = cookieField(literal, "HttpOnly", file.current);
+      if (httpOnly !== void 0) {
+        const value = sourceText(httpOnly.value, file.current).trim();
+        if (value !== "false") continue;
+      }
+      const literalStart = literal.startPosition.row + 1;
+      const literalEnd = literal.endPosition.row + 1;
+      const callStart = call.startPosition.row + 1;
+      const callEnd = call.endPosition.row + 1;
+      if (!changed(file, literalStart, literalEnd) && !changed(file, callStart, callEnd)) continue;
+      seen.add(literal.startIndex);
+      const line = nameField.field.startPosition.row + 1;
+      signals.push({
+        ruleId: "go-security.cookie.auth-httponly",
+        path: file.path,
+        line,
+        message: `${cookieName} is emitted as an authentication cookie without HttpOnly: true.`,
+        snippet: sourceText(literal, file.current).trim().slice(0, 300),
+        data: { cookieName, httpOnly: httpOnly === void 0 ? "omitted" : "false", setCookieLine: callStart }
+      });
+    }
+  }
+  return signals;
+}
+function latestCookieLiteralForAlias(fn, alias, before, source) {
+  let latest;
+  const consider = (node, left, right) => {
+    if (node.startIndex >= before || !directIdentifiers(left, source).includes(alias)) return;
+    const expression = singleExpression(right);
+    const literal = expression === null ? void 0 : findHTTPCookieLiteral(expression, source);
+    if (latest === void 0 || latest.at < node.startIndex) latest = { at: node.startIndex, literal };
+  };
+  for (const node of descendants(fn, "short_var_declaration")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("left"), node.childForFieldName("right"));
+    }
+  }
+  for (const node of descendants(fn, "assignment_statement")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("left"), node.childForFieldName("right"));
+    }
+  }
+  for (const node of descendants(fn, "var_spec")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("name"), node.childForFieldName("value"));
+    }
+  }
+  return latest?.literal;
+}
+function findHTTPCookieLiteral(node, source) {
+  const candidates = node.type === "composite_literal" ? [node] : descendants(node, "composite_literal");
+  return candidates.find((candidate) => {
+    const type = candidate.childForFieldName("type");
+    return type !== null && sourceText(type, source).replace(/\s/g, "") === "http.Cookie";
+  });
+}
+function cookieField(literal, fieldName, source) {
+  const body2 = literal.childForFieldName("body");
+  if (body2 === null) return void 0;
+  for (const element of body2.namedChildren) {
+    if (element.type !== "keyed_element") continue;
+    const key = element.childForFieldName("key");
+    const value = element.childForFieldName("value");
+    if (key === null || value === null || sourceText(key, source).trim() !== fieldName) continue;
+    return { field: key, value };
+  }
+  return void 0;
+}
+function stringLiteralValue(node, source) {
+  const value = sourceText(node, source).trim();
+  if (value.startsWith("`") && value.endsWith("`")) return value.slice(1, -1);
+  if (!value.startsWith('"') || !value.endsWith('"')) return void 0;
+  try {
+    const decoded = JSON.parse(value);
+    return typeof decoded === "string" ? decoded : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function isAuthenticationCookieName(name2) {
+  const normalized = name2.toLowerCase();
+  if (/(?:csrf|xsrf|preference|setting|theme|display)/.test(normalized)) return false;
+  return /(?:^|[-_.])(?:session(?:id|cookie)?|auth(?:entication|orization|token|cookie)?|login(?:cookie)?|(?:access|refresh|id)[-_]?token|token|credential)(?:$|[-_.])/.test(normalized);
 }
 function variableTimeCredentialComparisonSignals(file, root) {
   if (file.path.endsWith("_test.go")) return [];

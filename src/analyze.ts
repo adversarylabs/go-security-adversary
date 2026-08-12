@@ -16,6 +16,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
           if (tree.rootNode.hasError) throw new Error("Go source contains syntax errors");
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
+          signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -36,6 +37,142 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): Signal[] {
+  const signals: Signal[] = [];
+  const seen = new Set<number>();
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration"),
+  ];
+
+  for (const fn of functions) {
+    for (const call of descendants(fn, "call_expression")) {
+      if (!belongsDirectlyToFunction(call, fn)) continue;
+      const callable = call.childForFieldName("function");
+      const args = call.childForFieldName("arguments");
+      if (callable === null || args === null || sourceText(callable, file.current).trim() !== "http.SetCookie") continue;
+      const cookieArg = args.namedChild(args.namedChildCount - 1);
+      if (cookieArg === null) continue;
+
+      const literal = cookieArg.type === "identifier"
+        ? latestCookieLiteralForAlias(fn, sourceText(cookieArg, file.current), call.startIndex, file.current)
+        : findHTTPCookieLiteral(cookieArg, file.current);
+      if (literal === undefined || seen.has(literal.startIndex)) continue;
+
+      const nameField = cookieField(literal, "Name", file.current);
+      if (nameField === undefined) continue;
+      const cookieName = stringLiteralValue(nameField.value, file.current);
+      if (cookieName === undefined || !isAuthenticationCookieName(cookieName)) continue;
+
+      const valueField = cookieField(literal, "Value", file.current);
+      if (valueField === undefined || stringLiteralValue(valueField.value, file.current) === "") continue;
+
+      const maxAge = cookieField(literal, "MaxAge", file.current);
+      if (maxAge !== undefined && /^-\s*1$/.test(sourceText(maxAge.value, file.current).trim())) continue;
+
+      const httpOnly = cookieField(literal, "HttpOnly", file.current);
+      if (httpOnly !== undefined) {
+        const value = sourceText(httpOnly.value, file.current).trim();
+        if (value !== "false") continue;
+      }
+
+      const literalStart = literal.startPosition.row + 1;
+      const literalEnd = literal.endPosition.row + 1;
+      const callStart = call.startPosition.row + 1;
+      const callEnd = call.endPosition.row + 1;
+      if (!changed(file, literalStart, literalEnd) && !changed(file, callStart, callEnd)) continue;
+
+      seen.add(literal.startIndex);
+      const line = nameField.field.startPosition.row + 1;
+      signals.push({
+        ruleId: "go-security.cookie.auth-httponly",
+        path: file.path,
+        line,
+        message: `${cookieName} is emitted as an authentication cookie without HttpOnly: true.`,
+        snippet: sourceText(literal, file.current).trim().slice(0, 300),
+        data: { cookieName, httpOnly: httpOnly === undefined ? "omitted" : "false", setCookieLine: callStart },
+      });
+    }
+  }
+  return signals;
+}
+
+function latestCookieLiteralForAlias(
+  fn: Node,
+  alias: string,
+  before: number,
+  source: string,
+): Node | undefined {
+  let latest: { at: number; literal: Node | undefined } | undefined;
+  const consider = (node: Node, left: Node | null, right: Node | null): void => {
+    if (node.startIndex >= before || !directIdentifiers(left, source).includes(alias)) return;
+    const expression = singleExpression(right);
+    const literal = expression === null ? undefined : findHTTPCookieLiteral(expression, source);
+    if (latest === undefined || latest.at < node.startIndex) latest = { at: node.startIndex, literal };
+  };
+
+  for (const node of descendants(fn, "short_var_declaration")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("left"), node.childForFieldName("right"));
+    }
+  }
+  for (const node of descendants(fn, "assignment_statement")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("left"), node.childForFieldName("right"));
+    }
+  }
+  for (const node of descendants(fn, "var_spec")) {
+    if (belongsDirectlyToFunction(node, fn)) {
+      consider(node, node.childForFieldName("name"), node.childForFieldName("value"));
+    }
+  }
+  return latest?.literal;
+}
+
+function findHTTPCookieLiteral(node: Node, source: string): Node | undefined {
+  const candidates = node.type === "composite_literal" ? [node] : descendants(node, "composite_literal");
+  return candidates.find((candidate) => {
+    const type = candidate.childForFieldName("type");
+    return type !== null && sourceText(type, source).replace(/\s/g, "") === "http.Cookie";
+  });
+}
+
+function cookieField(
+  literal: Node,
+  fieldName: string,
+  source: string,
+): { field: Node; value: Node } | undefined {
+  const body = literal.childForFieldName("body");
+  if (body === null) return undefined;
+  for (const element of body.namedChildren) {
+    if (element.type !== "keyed_element") continue;
+    const key = element.childForFieldName("key");
+    const value = element.childForFieldName("value");
+    if (key === null || value === null || sourceText(key, source).trim() !== fieldName) continue;
+    return { field: key, value };
+  }
+  return undefined;
+}
+
+function stringLiteralValue(node: Node, source: string): string | undefined {
+  const value = sourceText(node, source).trim();
+  if (value.startsWith("`") && value.endsWith("`")) return value.slice(1, -1);
+  if (!value.startsWith('"') || !value.endsWith('"')) return undefined;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    return typeof decoded === "string" ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAuthenticationCookieName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  if (/(?:csrf|xsrf|preference|setting|theme|display)/.test(normalized)) return false;
+  return /(?:^|[-_.])(?:session(?:id|cookie)?|auth(?:entication|orization|token|cookie)?|login(?:cookie)?|(?:access|refresh|id)[-_]?token|token|credential)(?:$|[-_.])/
+    .test(normalized);
 }
 
 function variableTimeCredentialComparisonSignals(file: SourceRevision, root: Node): Signal[] {
