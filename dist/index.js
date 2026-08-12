@@ -17348,7 +17348,7 @@ var domain = {
         ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
         ...pathTraversalSignals(file),
         ...zipSlipSignals(file),
-        ...lineSignals(file, "go-security.crypto.math-rand", /\brand\.(?:Intn|Read|Float64|Int63)\b/, () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand).").filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current)),
+        ...mathRandSignals(file),
         ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
         ...lineSignals(file, "go-security.crypto.static-nonce", /(?:nonce|iv)\s*(?::=|=)\s*(?:make\(\[\]byte,\s*\d+\)|\[\]byte\{0)/i, () => "Static or zeroed nonce/IV pattern near cryptographic use."),
         ...lineSignals(file, "go-security.pprof.exposed", /net\/http\/pprof|_\s+"net\/http\/pprof"/, () => "pprof is imported; ensure it is not exposed on a public listener.")
@@ -17360,6 +17360,24 @@ var domain = {
     };
   }
 };
+function mathRandSignals(file) {
+  if (isObviousTestSupportPath(file.path)) return [];
+  return lineSignals(
+    file,
+    "go-security.crypto.math-rand",
+    /\brand\.(?:Intn|Read|Float64|Int63)\b/,
+    () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand)."
+  ).filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current));
+}
+function isObviousTestSupportPath(path) {
+  const normalized = path.replaceAll("\\", "/").toLowerCase();
+  const parts2 = normalized.split("/");
+  if (parts2.some((part) => /^(?:fake|fakes|fixture|fixtures|mock|mocks|testdata)$/.test(part))) {
+    return true;
+  }
+  const filename = parts2.at(-1) ?? "";
+  return /^(?:mock|fake)_.+\.go$/.test(filename) || /\.(?:mock|fake)\.go$/.test(filename);
+}
 function pathTraversalSignals(file) {
   if (file.path.endsWith("_test.go")) return [];
   const source = file.current;
