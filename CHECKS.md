@@ -95,11 +95,11 @@ Regression entry: [`test/p0-catalog.test.ts`](test/p0-catalog.test.ts) (P0 subse
 
 | | |
 | --- | --- |
-| **What** | Credentials embedded in URL authority or path |
+| **What** | Credentials embedded in a URL authority/path, or a secret-bearing HTTP query exposed through request errors/logging |
 | **Why** | URLs land in proxy logs, remotes, error dumps |
-| **Looks for** | `http(s)://…token…@` / user:pass@ / similar patterns |
+| **Looks for** | `http(s)://…token…@` / user:pass@, plus secret-like `url.Values` written to `RawQuery`, sent by `net/http`, and returned/wrapped/logged through the request URL or HTTP error |
 | **Stays quiet when** | Auth via headers or credential helpers |
-| **Remediation** | Never put long-lived secrets in URLs |
+| **Remediation** | Put credentials in authorization headers; never put long-lived secrets in URLs |
 
 ### `go-security.credential-file-mode`
 

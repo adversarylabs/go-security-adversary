@@ -17163,10 +17163,10 @@ var domain = {
       category: "security",
       severity: "high",
       confidence: "high",
-      summary: (count) => `${count} URL construction${count === 1 ? "" : "s"} embed a token or password in the authority or path.`,
+      summary: (count) => `${count} URL construction${count === 1 ? "" : "s"} expose a token or password through the URL.`,
       whyItMatters: "URLs are logged by proxies, VCS remotes, HTTP clients, and error messages more readily than dedicated secret fields.",
-      impact: "Access tokens become durable secrets in clone URLs, redirect logs, and support dumps.",
-      recommendation: "Use credential helpers, Authorization headers, or short-lived tokens that never appear in the URL string."
+      impact: "Access tokens become durable secrets in clone URLs, HTTP errors, request logs, and support dumps.",
+      recommendation: "Use credential helpers or Authorization headers; keep secrets out of URL authority, path, and query components."
     },
     {
       id: "go-security.credential-file-mode",
@@ -21535,6 +21535,7 @@ async function analyzeDiscovery(discovery) {
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
           signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
+          signals.push(...secretQueryExposureSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -21554,6 +21555,217 @@ async function analyzeDiscovery(discovery) {
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+function secretQueryExposureSignals(file, root) {
+  if (file.path.endsWith("_test.go")) return [];
+  const httpAliases = netHTTPAliases(root, file.current);
+  if (httpAliases.size === 0) return [];
+  const signals = [];
+  const seen = /* @__PURE__ */ new Set();
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration")
+  ];
+  for (const fn of functions) {
+    const calls = descendants(fn, "call_expression").filter((node) => belongsDirectlyToFunction(node, fn)).sort((left, right) => left.startIndex - right.startIndex);
+    const assignments = [
+      ...descendants(fn, "short_var_declaration"),
+      ...descendants(fn, "assignment_statement")
+    ].filter((node) => belongsDirectlyToFunction(node, fn)).sort((left, right) => left.startIndex - right.startIndex);
+    const httpClients = netHTTPClientExpressions(fn, assignments, httpAliases, file.current);
+    const mutations = /* @__PURE__ */ new Map();
+    for (const call of calls) {
+      const callable = call.childForFieldName("function");
+      const args2 = call.childForFieldName("arguments");
+      if (callable === null || args2 === null || args2.namedChildCount < 2) continue;
+      const method = sourceText(callable, file.current).replace(/\s/g, "");
+      const match = method.match(/^([A-Za-z_]\w*)\.(?:Set|Add)$/);
+      if (match === null) continue;
+      const keyNode = args2.namedChild(0);
+      const valueNode = args2.namedChild(1);
+      if (keyNode === null || valueNode === null) continue;
+      const key = stringLiteralValue(keyNode, file.current);
+      const value = sourceText(valueNode, file.current).trim();
+      if (key === void 0 || !isSecretQueryKey(key) || !isSecretLikeExpression(value)) continue;
+      mutations.set(match[1], { query: match[1], key, value, node: call });
+    }
+    const urls = /* @__PURE__ */ new Map();
+    for (const assignment of assignments) {
+      const left = singleExpression(assignment.childForFieldName("left"));
+      const right = singleExpression(assignment.childForFieldName("right"));
+      if (left === null || right === null) continue;
+      const urlMatch = sourceText(left, file.current).replace(/\s/g, "").match(/^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.RawQuery$/);
+      const queryMatch = sourceText(right, file.current).replace(/\s/g, "").match(/^([A-Za-z_]\w*)\.Encode\(\)$/);
+      if (urlMatch === null || queryMatch === null) continue;
+      const mutation = mutations.get(queryMatch[1]);
+      if (mutation === void 0 || mutation.node.startIndex >= assignment.startIndex) continue;
+      urls.set(urlMatch[1], { url: urlMatch[1], mutation, rawQuery: assignment });
+    }
+    for (const url of urls.values()) {
+      for (const flow of httpErrorFlows(assignments, url, httpAliases, httpClients, file.current)) {
+        const sink = firstHTTPExposureSink(fn, calls, flow, file.current);
+        if (sink === void 0) continue;
+        const anchors = [flow.mutation.node, flow.rawQuery, flow.requestNode, flow.httpNode, sink].filter((node) => node !== void 0);
+        const anchor = anchors.find((node) => changed(
+          file,
+          node.startPosition.row + 1,
+          node.endPosition.row + 1
+        ));
+        if (anchor === void 0) continue;
+        const identity = `${flow.mutation.node.startIndex}:${sink.startIndex}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        signals.push({
+          ruleId: "go-security.token-in-url",
+          path: file.path,
+          line: anchor.startPosition.row + 1,
+          endLine: anchor.endPosition.row + 1,
+          message: `${flow.mutation.key} carries ${flow.mutation.value} in an HTTP query string whose request URL can escape through ${exposureDescription(sink, flow.error, file.current)}.`,
+          snippet: sourceText(anchor, file.current).trim().slice(0, 300),
+          data: {
+            queryKey: flow.mutation.key,
+            secretExpression: flow.mutation.value,
+            url: flow.url,
+            error: flow.error,
+            queryLine: flow.mutation.node.startPosition.row + 1,
+            httpLine: flow.httpNode.startPosition.row + 1,
+            sinkLine: sink.startPosition.row + 1
+          }
+        });
+      }
+    }
+  }
+  return signals;
+}
+function httpErrorFlows(assignments, url, httpAliases, httpClients, source) {
+  const requestOrigins = /* @__PURE__ */ new Map();
+  const requestFromURL = url.url.match(/^([A-Za-z_]\w*)\.URL$/)?.[1];
+  if (requestFromURL !== void 0) requestOrigins.set(requestFromURL, url.rawQuery);
+  for (const assignment of assignments) {
+    if (assignment.startIndex <= url.rawQuery.startIndex) continue;
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right?.type !== "call_expression") continue;
+    const callable = right.childForFieldName("function");
+    const args2 = right.childForFieldName("arguments");
+    if (callable === null || args2 === null) continue;
+    const name2 = sourceText(callable, source).replace(/\s/g, "");
+    const offset = [...httpAliases].some((alias) => name2 === `${alias}.NewRequest`) ? 1 : [...httpAliases].some((alias) => name2 === `${alias}.NewRequestWithContext`) ? 2 : void 0;
+    if (offset === void 0) continue;
+    const endpoint = args2.namedChild(offset);
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (endpoint !== null && names.length > 0 && expressionUsesURL(endpoint, url.url, source)) {
+      requestOrigins.set(names[0], right);
+    }
+  }
+  const flows = [];
+  for (const assignment of assignments) {
+    if (assignment.startIndex <= url.rawQuery.startIndex) continue;
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right?.type !== "call_expression") continue;
+    const callable = right.childForFieldName("function");
+    const args2 = right.childForFieldName("arguments");
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (callable === null || args2 === null || names.length < 2) continue;
+    const name2 = sourceText(callable, source).replace(/\s/g, "");
+    const error = names.at(-1);
+    if (error === "_") continue;
+    const method = name2.match(/^(.*)\.(Get|Post|PostForm)$/);
+    const directHTTP = method !== null && (httpClients.has(method[1]) || [...httpAliases].includes(method[1]));
+    const endpoint = args2.namedChild(0);
+    if (directHTTP && endpoint !== null && expressionUsesURL(endpoint, url.url, source)) {
+      flows.push({ ...url, httpNode: right, error });
+      continue;
+    }
+    const doReceiver = name2.match(/^(.*)\.Do$/)?.[1];
+    if (doReceiver === void 0 || !httpClients.has(doReceiver)) continue;
+    const requestArg = args2.namedChild(0);
+    if (requestArg === null) continue;
+    const request = sourceText(requestArg, source).trim();
+    const requestNode = requestOrigins.get(request);
+    if (requestNode !== void 0) {
+      flows.push({ ...url, request, requestNode, httpNode: right, error });
+    }
+  }
+  return flows;
+}
+function netHTTPClientExpressions(fn, assignments, httpAliases, source) {
+  const clients = /* @__PURE__ */ new Set();
+  for (const alias of httpAliases) clients.add(`${alias}.DefaultClient`);
+  for (const parameter of descendants(fn, "parameter_declaration")) {
+    if (!belongsDirectlyToFunction(parameter, fn)) continue;
+    const type = parameter.childForFieldName("type");
+    if (type === null) continue;
+    const typeText = sourceText(type, source).replace(/\s/g, "");
+    if (![...httpAliases].some((alias) => typeText === `*${alias}.Client` || typeText === `${alias}.Client`)) continue;
+    for (const name2 of directIdentifiers(parameter.childForFieldName("name"), source)) clients.add(name2);
+  }
+  for (const assignment of assignments) {
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right === null) continue;
+    const value = sourceText(right, source).replace(/\s/g, "");
+    if (![...httpAliases].some(
+      (alias) => value.startsWith(`&${alias}.Client{`) || value.startsWith(`${alias}.Client{`) || value === `${alias}.DefaultClient`
+    )) continue;
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (names.length === 1) clients.add(names[0]);
+  }
+  return clients;
+}
+function firstHTTPExposureSink(fn, calls, flow, source) {
+  const afterHTTP = (node) => node.startIndex > flow.httpNode.endIndex;
+  for (const call of calls.filter(afterHTTP)) {
+    const callable = call.childForFieldName("function");
+    const args2 = call.childForFieldName("arguments");
+    if (callable === null || args2 === null) continue;
+    const name2 = sourceText(callable, source).replace(/\s/g, "");
+    const wrapsError = /(?:^|\.)(?:Errorf|Wrap|Wrapf)$/.test(name2);
+    const logsValue = /(?:^|\.)(?:Print|Printf|Println|Debug|Info|Warn|Error)$/.test(name2);
+    if ((!wrapsError || !hasAncestor(call, "return_statement", fn)) && !logsValue) continue;
+    const text = sourceText(args2, source);
+    if (referencesIdentifier(text, flow.error) && !identifierReassignedBetween(fn, flow.error, flow.httpNode.endIndex, call.startIndex, source) || referencesRequestURL(text, flow)) return call;
+  }
+  for (const statement of descendants(fn, "return_statement")) {
+    if (!belongsDirectlyToFunction(statement, fn) || !afterHTTP(statement)) continue;
+    if (referencesIdentifier(sourceText(statement, source), flow.error) && !identifierReassignedBetween(fn, flow.error, flow.httpNode.endIndex, statement.startIndex, source)) return statement;
+  }
+  return void 0;
+}
+function identifierReassignedBetween(fn, identifier, after, before, source) {
+  for (const type of ["short_var_declaration", "assignment_statement", "var_spec"]) {
+    for (const node of descendants(fn, type)) {
+      if (!belongsDirectlyToFunction(node, fn) || node.startIndex <= after || node.startIndex >= before) continue;
+      const left = node.childForFieldName(type === "var_spec" ? "name" : "left");
+      if (directIdentifiers(left, source).includes(identifier)) return true;
+    }
+  }
+  return false;
+}
+function hasAncestor(node, type, boundary) {
+  for (let parent = node.parent; parent !== null && parent.id !== boundary.id; parent = parent.parent) {
+    if (parent.type === type) return true;
+  }
+  return false;
+}
+function expressionUsesURL(node, url, source) {
+  const text = sourceText(node, source).replace(/\s/g, "");
+  const escaped = escapeRegExp(url);
+  return new RegExp(`^(?:${escaped}|${escaped}\\.String\\(\\)|${escaped}\\.RequestURI\\(\\))$`).test(text);
+}
+function referencesIdentifier(text, identifier) {
+  return new RegExp(`\\b${escapeRegExp(identifier)}\\b`).test(text);
+}
+function referencesRequestURL(text, flow) {
+  if (flow.request !== void 0 && new RegExp(`\\b${escapeRegExp(flow.request)}\\.URL\\b`).test(text)) return true;
+  return new RegExp(`\\b${escapeRegExp(flow.url)}(?:\\.String\\(\\)|\\b)`).test(text);
+}
+function exposureDescription(sink, error, source) {
+  const text = sourceText(sink, source);
+  if (sink.type === "return_statement") return `returned HTTP error ${error}`;
+  if (referencesIdentifier(text, error)) return `logged or wrapped HTTP error ${error}`;
+  return "logged request URL";
+}
+function isSecretQueryKey(key) {
+  return /^(?:(?:access|refresh|id|auth|api)[_-]?token|token|api[_-]?key|apikey|client[_-]?secret|secret|password|credential|signature|sig)$/i.test(key);
 }
 function authenticationCookieHttpOnlySignals(file, root) {
   const signals = [];
@@ -22016,7 +22228,7 @@ var GO_SECURITY_MODEL_PROMPT = `You are reviewing Go code for trust-boundary and
 Authority (only report issues in this scope):
 - TLS and peer authentication
 - JWT and token validation
-- secrets on argv, in URLs, in logs, or in world-readable files
+- secrets on argv, in URL authority/path/query components, in HTTP errors or request logs, or in world-readable files
 - secret manager / cloud CLI output that may leak credentials
 - credential storage modes and local secret material
 - authentication header construction and accidental secret retention

@@ -17,6 +17,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
           signals.push(...nilAttestationSubjectSignals(file, tree.rootNode));
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
           signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
+          signals.push(...secretQueryExposureSignals(file, tree.rootNode));
         } finally {
           tree.delete();
         }
@@ -37,6 +38,298 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+interface SecretQueryMutation {
+  query: string;
+  key: string;
+  value: string;
+  node: Node;
+}
+
+interface SecretURLFlow {
+  url: string;
+  mutation: SecretQueryMutation;
+  rawQuery: Node;
+}
+
+interface HTTPErrorFlow extends SecretURLFlow {
+  request?: string;
+  requestNode?: Node;
+  httpNode: Node;
+  error: string;
+}
+
+function secretQueryExposureSignals(file: SourceRevision, root: Node): Signal[] {
+  if (file.path.endsWith("_test.go")) return [];
+  const httpAliases = netHTTPAliases(root, file.current);
+  if (httpAliases.size === 0) return [];
+  const signals: Signal[] = [];
+  const seen = new Set<string>();
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration"),
+  ];
+
+  for (const fn of functions) {
+    const calls = descendants(fn, "call_expression")
+      .filter((node) => belongsDirectlyToFunction(node, fn))
+      .sort((left, right) => left.startIndex - right.startIndex);
+    const assignments = [
+      ...descendants(fn, "short_var_declaration"),
+      ...descendants(fn, "assignment_statement"),
+    ]
+      .filter((node) => belongsDirectlyToFunction(node, fn))
+      .sort((left, right) => left.startIndex - right.startIndex);
+    const httpClients = netHTTPClientExpressions(fn, assignments, httpAliases, file.current);
+
+    const mutations = new Map<string, SecretQueryMutation>();
+    for (const call of calls) {
+      const callable = call.childForFieldName("function");
+      const args = call.childForFieldName("arguments");
+      if (callable === null || args === null || args.namedChildCount < 2) continue;
+      const method = sourceText(callable, file.current).replace(/\s/g, "");
+      const match = method.match(/^([A-Za-z_]\w*)\.(?:Set|Add)$/);
+      if (match === null) continue;
+      const keyNode = args.namedChild(0);
+      const valueNode = args.namedChild(1);
+      if (keyNode === null || valueNode === null) continue;
+      const key = stringLiteralValue(keyNode, file.current);
+      const value = sourceText(valueNode, file.current).trim();
+      if (key === undefined || !isSecretQueryKey(key) || !isSecretLikeExpression(value)) continue;
+      mutations.set(match[1]!, { query: match[1]!, key, value, node: call });
+    }
+
+    const urls = new Map<string, SecretURLFlow>();
+    for (const assignment of assignments) {
+      const left = singleExpression(assignment.childForFieldName("left"));
+      const right = singleExpression(assignment.childForFieldName("right"));
+      if (left === null || right === null) continue;
+      const urlMatch = sourceText(left, file.current).replace(/\s/g, "").match(/^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.RawQuery$/);
+      const queryMatch = sourceText(right, file.current).replace(/\s/g, "").match(/^([A-Za-z_]\w*)\.Encode\(\)$/);
+      if (urlMatch === null || queryMatch === null) continue;
+      const mutation = mutations.get(queryMatch[1]!);
+      if (mutation === undefined || mutation.node.startIndex >= assignment.startIndex) continue;
+      urls.set(urlMatch[1]!, { url: urlMatch[1]!, mutation, rawQuery: assignment });
+    }
+
+    for (const url of urls.values()) {
+      for (const flow of httpErrorFlows(assignments, url, httpAliases, httpClients, file.current)) {
+        const sink = firstHTTPExposureSink(fn, calls, flow, file.current);
+        if (sink === undefined) continue;
+        const anchors = [flow.mutation.node, flow.rawQuery, flow.requestNode, flow.httpNode, sink]
+          .filter((node): node is Node => node !== undefined);
+        const anchor = anchors.find((node) => changed(
+          file,
+          node.startPosition.row + 1,
+          node.endPosition.row + 1,
+        ));
+        if (anchor === undefined) continue;
+        const identity = `${flow.mutation.node.startIndex}:${sink.startIndex}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        signals.push({
+          ruleId: "go-security.token-in-url",
+          path: file.path,
+          line: anchor.startPosition.row + 1,
+          endLine: anchor.endPosition.row + 1,
+          message: `${flow.mutation.key} carries ${flow.mutation.value} in an HTTP query string whose request URL can escape through ${exposureDescription(sink, flow.error, file.current)}.`,
+          snippet: sourceText(anchor, file.current).trim().slice(0, 300),
+          data: {
+            queryKey: flow.mutation.key,
+            secretExpression: flow.mutation.value,
+            url: flow.url,
+            error: flow.error,
+            queryLine: flow.mutation.node.startPosition.row + 1,
+            httpLine: flow.httpNode.startPosition.row + 1,
+            sinkLine: sink.startPosition.row + 1,
+          },
+        });
+      }
+    }
+  }
+  return signals;
+}
+
+function httpErrorFlows(
+  assignments: Node[],
+  url: SecretURLFlow,
+  httpAliases: Set<string>,
+  httpClients: Set<string>,
+  source: string,
+): HTTPErrorFlow[] {
+  const requestOrigins = new Map<string, Node>();
+  const requestFromURL = url.url.match(/^([A-Za-z_]\w*)\.URL$/)?.[1];
+  if (requestFromURL !== undefined) requestOrigins.set(requestFromURL, url.rawQuery);
+
+  for (const assignment of assignments) {
+    if (assignment.startIndex <= url.rawQuery.startIndex) continue;
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right?.type !== "call_expression") continue;
+    const callable = right.childForFieldName("function");
+    const args = right.childForFieldName("arguments");
+    if (callable === null || args === null) continue;
+    const name = sourceText(callable, source).replace(/\s/g, "");
+    const offset = [...httpAliases].some((alias) => name === `${alias}.NewRequest`) ? 1
+      : [...httpAliases].some((alias) => name === `${alias}.NewRequestWithContext`) ? 2
+        : undefined;
+    if (offset === undefined) continue;
+    const endpoint = args.namedChild(offset);
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (endpoint !== null && names.length > 0 && expressionUsesURL(endpoint, url.url, source)) {
+      requestOrigins.set(names[0]!, right);
+    }
+  }
+
+  const flows: HTTPErrorFlow[] = [];
+  for (const assignment of assignments) {
+    if (assignment.startIndex <= url.rawQuery.startIndex) continue;
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right?.type !== "call_expression") continue;
+    const callable = right.childForFieldName("function");
+    const args = right.childForFieldName("arguments");
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (callable === null || args === null || names.length < 2) continue;
+    const name = sourceText(callable, source).replace(/\s/g, "");
+    const error = names.at(-1)!;
+    if (error === "_") continue;
+
+    const method = name.match(/^(.*)\.(Get|Post|PostForm)$/);
+    const directHTTP = method !== null && (
+      httpClients.has(method[1]!) ||
+      [...httpAliases].includes(method[1]!)
+    );
+    const endpoint = args.namedChild(0);
+    if (directHTTP && endpoint !== null && expressionUsesURL(endpoint, url.url, source)) {
+      flows.push({ ...url, httpNode: right, error });
+      continue;
+    }
+
+    const doReceiver = name.match(/^(.*)\.Do$/)?.[1];
+    if (doReceiver === undefined || !httpClients.has(doReceiver)) continue;
+    const requestArg = args.namedChild(0);
+    if (requestArg === null) continue;
+    const request = sourceText(requestArg, source).trim();
+    const requestNode = requestOrigins.get(request);
+    if (requestNode !== undefined) {
+      flows.push({ ...url, request, requestNode, httpNode: right, error });
+    }
+  }
+  return flows;
+}
+
+function netHTTPClientExpressions(
+  fn: Node,
+  assignments: Node[],
+  httpAliases: Set<string>,
+  source: string,
+): Set<string> {
+  const clients = new Set<string>();
+  for (const alias of httpAliases) clients.add(`${alias}.DefaultClient`);
+
+  for (const parameter of descendants(fn, "parameter_declaration")) {
+    if (!belongsDirectlyToFunction(parameter, fn)) continue;
+    const type = parameter.childForFieldName("type");
+    if (type === null) continue;
+    const typeText = sourceText(type, source).replace(/\s/g, "");
+    if (![...httpAliases].some((alias) => typeText === `*${alias}.Client` || typeText === `${alias}.Client`)) continue;
+    for (const name of directIdentifiers(parameter.childForFieldName("name"), source)) clients.add(name);
+  }
+
+  for (const assignment of assignments) {
+    const right = singleExpression(assignment.childForFieldName("right"));
+    if (right === null) continue;
+    const value = sourceText(right, source).replace(/\s/g, "");
+    if (![...httpAliases].some((alias) =>
+      value.startsWith(`&${alias}.Client{`) || value.startsWith(`${alias}.Client{`) || value === `${alias}.DefaultClient`
+    )) continue;
+    const names = directIdentifiers(assignment.childForFieldName("left"), source);
+    if (names.length === 1) clients.add(names[0]!);
+  }
+  return clients;
+}
+
+function firstHTTPExposureSink(
+  fn: Node,
+  calls: Node[],
+  flow: HTTPErrorFlow,
+  source: string,
+): Node | undefined {
+  const afterHTTP = (node: Node) => node.startIndex > flow.httpNode.endIndex;
+  for (const call of calls.filter(afterHTTP)) {
+    const callable = call.childForFieldName("function");
+    const args = call.childForFieldName("arguments");
+    if (callable === null || args === null) continue;
+    const name = sourceText(callable, source).replace(/\s/g, "");
+    const wrapsError = /(?:^|\.)(?:Errorf|Wrap|Wrapf)$/.test(name);
+    const logsValue = /(?:^|\.)(?:Print|Printf|Println|Debug|Info|Warn|Error)$/.test(name);
+    if ((!wrapsError || !hasAncestor(call, "return_statement", fn)) && !logsValue) continue;
+    const text = sourceText(args, source);
+    if (
+      (referencesIdentifier(text, flow.error) &&
+        !identifierReassignedBetween(fn, flow.error, flow.httpNode.endIndex, call.startIndex, source)) ||
+      referencesRequestURL(text, flow)
+    ) return call;
+  }
+
+  for (const statement of descendants(fn, "return_statement")) {
+    if (!belongsDirectlyToFunction(statement, fn) || !afterHTTP(statement)) continue;
+    if (
+      referencesIdentifier(sourceText(statement, source), flow.error) &&
+      !identifierReassignedBetween(fn, flow.error, flow.httpNode.endIndex, statement.startIndex, source)
+    ) return statement;
+  }
+  return undefined;
+}
+
+function identifierReassignedBetween(
+  fn: Node,
+  identifier: string,
+  after: number,
+  before: number,
+  source: string,
+): boolean {
+  for (const type of ["short_var_declaration", "assignment_statement", "var_spec"]) {
+    for (const node of descendants(fn, type)) {
+      if (!belongsDirectlyToFunction(node, fn) || node.startIndex <= after || node.startIndex >= before) continue;
+      const left = node.childForFieldName(type === "var_spec" ? "name" : "left");
+      if (directIdentifiers(left, source).includes(identifier)) return true;
+    }
+  }
+  return false;
+}
+
+function hasAncestor(node: Node, type: string, boundary: Node): boolean {
+  for (let parent = node.parent; parent !== null && parent.id !== boundary.id; parent = parent.parent) {
+    if (parent.type === type) return true;
+  }
+  return false;
+}
+
+function expressionUsesURL(node: Node, url: string, source: string): boolean {
+  const text = sourceText(node, source).replace(/\s/g, "");
+  const escaped = escapeRegExp(url);
+  return new RegExp(`^(?:${escaped}|${escaped}\\.String\\(\\)|${escaped}\\.RequestURI\\(\\))$`).test(text);
+}
+
+function referencesIdentifier(text: string, identifier: string): boolean {
+  return new RegExp(`\\b${escapeRegExp(identifier)}\\b`).test(text);
+}
+
+function referencesRequestURL(text: string, flow: HTTPErrorFlow): boolean {
+  if (flow.request !== undefined && new RegExp(`\\b${escapeRegExp(flow.request)}\\.URL\\b`).test(text)) return true;
+  return new RegExp(`\\b${escapeRegExp(flow.url)}(?:\\.String\\(\\)|\\b)`).test(text);
+}
+
+function exposureDescription(sink: Node, error: string, source: string): string {
+  const text = sourceText(sink, source);
+  if (sink.type === "return_statement") return `returned HTTP error ${error}`;
+  if (referencesIdentifier(text, error)) return `logged or wrapped HTTP error ${error}`;
+  return "logged request URL";
+}
+
+function isSecretQueryKey(key: string): boolean {
+  return /^(?:(?:access|refresh|id|auth|api)[_-]?token|token|api[_-]?key|apikey|client[_-]?secret|secret|password|credential|signature|sig)$/i.test(key);
 }
 
 function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): Signal[] {
