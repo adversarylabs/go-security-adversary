@@ -233,6 +233,22 @@ export const domain: DomainDefinition = {
       recommendation:
         "Use crypto/subtle.ConstantTimeCompare for shared-secret headers or hmac.Equal for message authentication codes.",
     },
+    {
+      id: "go-security.cookie.auth-httponly",
+      title: "An authentication cookie is readable by browser scripts",
+      concern: "authentication and session cookies emitted without HttpOnly",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) =>
+        `${count} authentication cookie${count === 1 ? " is" : "s are"} emitted without HttpOnly protection.`,
+      whyItMatters:
+        "Authentication cookies contain reusable credentials and normally have no reason to be visible to browser JavaScript.",
+      impact:
+        "A script running in the origin, including one introduced through XSS, can steal the cookie and replay the user's session.",
+      recommendation:
+        "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie.",
+    },
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
   approvalSummary: "I would approve the reviewed security boundaries represented by this change.",
