@@ -64,10 +64,10 @@ export const domain: DomainDefinition = {
       category: "security",
       severity: "high",
       confidence: "high",
-      summary: (count) => `${count} URL construction${count === 1 ? "" : "s"} embed a token or password in the authority or path.`,
+      summary: (count) => `${count} URL construction${count === 1 ? "" : "s"} expose a token or password through the URL.`,
       whyItMatters: "URLs are logged by proxies, VCS remotes, HTTP clients, and error messages more readily than dedicated secret fields.",
-      impact: "Access tokens become durable secrets in clone URLs, redirect logs, and support dumps.",
-      recommendation: "Use credential helpers, Authorization headers, or short-lived tokens that never appear in the URL string.",
+      impact: "Access tokens become durable secrets in clone URLs, HTTP errors, request logs, and support dumps.",
+      recommendation: "Use credential helpers or Authorization headers; keep secrets out of URL authority, path, and query components.",
     },
     {
       id: "go-security.credential-file-mode",
