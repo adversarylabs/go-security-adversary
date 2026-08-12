@@ -42,6 +42,8 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
 function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): Signal[] {
   const signals: Signal[] = [];
   const seen = new Set<number>();
+  const httpAliases = netHTTPAliases(root, file.current);
+  if (httpAliases.size === 0) return [];
   const functions = [
     ...descendants(root, "function_declaration"),
     ...descendants(root, "method_declaration"),
@@ -52,27 +54,29 @@ function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): 
       if (!belongsDirectlyToFunction(call, fn)) continue;
       const callable = call.childForFieldName("function");
       const args = call.childForFieldName("arguments");
-      if (callable === null || args === null || sourceText(callable, file.current).trim() !== "http.SetCookie") continue;
+      if (callable === null || args === null || !isHTTPSetCookie(callable, httpAliases, file.current)) continue;
       const cookieArg = args.namedChild(args.namedChildCount - 1);
       if (cookieArg === null) continue;
 
-      const literal = cookieArg.type === "identifier"
-        ? latestCookieLiteralForAlias(fn, sourceText(cookieArg, file.current), call.startIndex, file.current)
-        : findHTTPCookieLiteral(cookieArg, file.current);
-      if (literal === undefined || seen.has(literal.startIndex)) continue;
+      const alias = cookieAliasArgument(cookieArg, file.current);
+      const origin = alias === undefined
+        ? directCookieLiteralOrigin(cookieArg, httpAliases, file.current)
+        : latestCookieLiteralForAlias(fn, alias, call.startIndex, httpAliases, file.current);
+      if (origin === undefined || seen.has(origin.literal.startIndex)) continue;
+      const literal = origin.literal;
 
-      const nameField = cookieField(literal, "Name", file.current);
+      const nameField = effectiveCookieField(fn, alias, origin.at, call.startIndex, literal, "Name", file.current);
       if (nameField === undefined) continue;
       const cookieName = stringLiteralValue(nameField.value, file.current);
       if (cookieName === undefined || !isAuthenticationCookieName(cookieName)) continue;
 
-      const valueField = cookieField(literal, "Value", file.current);
+      const valueField = effectiveCookieField(fn, alias, origin.at, call.startIndex, literal, "Value", file.current);
       if (valueField === undefined || stringLiteralValue(valueField.value, file.current) === "") continue;
 
-      const maxAge = cookieField(literal, "MaxAge", file.current);
-      if (maxAge !== undefined && /^-\s*1$/.test(sourceText(maxAge.value, file.current).trim())) continue;
+      const maxAge = effectiveCookieField(fn, alias, origin.at, call.startIndex, literal, "MaxAge", file.current);
+      if (maxAge !== undefined && isNegativeIntegerLiteral(sourceText(maxAge.value, file.current))) continue;
 
-      const httpOnly = cookieField(literal, "HttpOnly", file.current);
+      const httpOnly = effectiveCookieField(fn, alias, origin.at, call.startIndex, literal, "HttpOnly", file.current);
       if (httpOnly !== undefined) {
         const value = sourceText(httpOnly.value, file.current).trim();
         if (value !== "false") continue;
@@ -82,10 +86,13 @@ function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): 
       const literalEnd = literal.endPosition.row + 1;
       const callStart = call.startPosition.row + 1;
       const callEnd = call.endPosition.row + 1;
-      if (!changed(file, literalStart, literalEnd) && !changed(file, callStart, callEnd)) continue;
+      const fieldChanged = [nameField, valueField, maxAge, httpOnly].some((field) =>
+        field !== undefined && changed(file, field.field.startPosition.row + 1, field.value.endPosition.row + 1)
+      );
+      if (!changed(file, literalStart, literalEnd) && !changed(file, callStart, callEnd) && !fieldChanged) continue;
 
       seen.add(literal.startIndex);
-      const line = nameField.field.startPosition.row + 1;
+      const line = (httpOnly?.field ?? nameField.field).startPosition.row + 1;
       signals.push({
         ruleId: "go-security.cookie.auth-httponly",
         path: file.path,
@@ -99,17 +106,56 @@ function authenticationCookieHttpOnlySignals(file: SourceRevision, root: Node): 
   return signals;
 }
 
+interface CookieLiteralOrigin {
+  literal: Node;
+  at: number;
+}
+
+function netHTTPAliases(root: Node, source: string): Set<string> {
+  const aliases = new Set<string>();
+  for (const spec of descendants(root, "import_spec")) {
+    const path = spec.childForFieldName("path");
+    if (path === null || stringLiteralValue(path, source) !== "net/http") continue;
+    const name = spec.childForFieldName("name");
+    const alias = name === null ? "http" : sourceText(name, source).trim();
+    if (alias !== "." && alias !== "_") aliases.add(alias);
+  }
+  return aliases;
+}
+
+function isHTTPSetCookie(callable: Node, aliases: Set<string>, source: string): boolean {
+  const text = sourceText(callable, source).replace(/\s/g, "");
+  return [...aliases].some((alias) => text === `${alias}.SetCookie`);
+}
+
+function cookieAliasArgument(node: Node, source: string): string | undefined {
+  if (node.type === "identifier") return sourceText(node, source);
+  if (node.type !== "unary_expression" || !sourceText(node, source).trim().startsWith("&")) return undefined;
+  const operand = node.childForFieldName("operand");
+  return operand?.type === "identifier" ? sourceText(operand, source) : undefined;
+}
+
+function directCookieLiteralOrigin(
+  node: Node,
+  httpAliases: Set<string>,
+  source: string,
+): CookieLiteralOrigin | undefined {
+  const literal = findHTTPCookieLiteral(node, httpAliases, source);
+  return literal === undefined ? undefined : { literal, at: literal.startIndex };
+}
+
 function latestCookieLiteralForAlias(
   fn: Node,
   alias: string,
   before: number,
+  httpAliases: Set<string>,
   source: string,
-): Node | undefined {
+): CookieLiteralOrigin | undefined {
   let latest: { at: number; literal: Node | undefined } | undefined;
   const consider = (node: Node, left: Node | null, right: Node | null): void => {
     if (node.startIndex >= before || !directIdentifiers(left, source).includes(alias)) return;
     const expression = singleExpression(right);
-    const literal = expression === null ? undefined : findHTTPCookieLiteral(expression, source);
+    const literal = expression === null ? undefined : findHTTPCookieLiteral(expression, httpAliases, source);
     if (latest === undefined || latest.at < node.startIndex) latest = { at: node.startIndex, literal };
   };
 
@@ -128,15 +174,56 @@ function latestCookieLiteralForAlias(
       consider(node, node.childForFieldName("name"), node.childForFieldName("value"));
     }
   }
-  return latest?.literal;
+  return latest?.literal === undefined ? undefined : { literal: latest.literal, at: latest.at };
 }
 
-function findHTTPCookieLiteral(node: Node, source: string): Node | undefined {
+function findHTTPCookieLiteral(node: Node, httpAliases: Set<string>, source: string): Node | undefined {
   const candidates = node.type === "composite_literal" ? [node] : descendants(node, "composite_literal");
   return candidates.find((candidate) => {
     const type = candidate.childForFieldName("type");
-    return type !== null && sourceText(type, source).replace(/\s/g, "") === "http.Cookie";
+    if (type === null) return false;
+    const text = sourceText(type, source).replace(/\s/g, "");
+    return [...httpAliases].some((alias) => text === `${alias}.Cookie`);
   });
+}
+
+function effectiveCookieField(
+  fn: Node,
+  alias: string | undefined,
+  after: number,
+  before: number,
+  literal: Node,
+  fieldName: string,
+  source: string,
+): { field: Node; value: Node } | undefined {
+  if (alias !== undefined) {
+    const mutation = latestCookieFieldMutation(fn, alias, fieldName, after, before, source);
+    if (mutation !== undefined) return mutation;
+  }
+  return cookieField(literal, fieldName, source);
+}
+
+function latestCookieFieldMutation(
+  fn: Node,
+  alias: string,
+  fieldName: string,
+  after: number,
+  before: number,
+  source: string,
+): { field: Node; value: Node } | undefined {
+  let latest: { at: number; field: Node; value: Node } | undefined;
+  for (const assignment of descendants(fn, "assignment_statement")) {
+    if (!belongsDirectlyToFunction(assignment, fn) || assignment.startIndex <= after || assignment.startIndex >= before) continue;
+    const left = singleExpression(assignment.childForFieldName("left"));
+    const right = singleExpression(assignment.childForFieldName("right"));
+    const operator = assignment.childForFieldName("operator");
+    if (left === null || right === null || operator === null || sourceText(operator, source) !== "=") continue;
+    if (sourceText(left, source).replace(/\s/g, "") !== `${alias}.${fieldName}`) continue;
+    if (latest === undefined || latest.at < assignment.startIndex) {
+      latest = { at: assignment.startIndex, field: left, value: right };
+    }
+  }
+  return latest === undefined ? undefined : { field: latest.field, value: latest.value };
 }
 
 function cookieField(
@@ -166,6 +253,15 @@ function stringLiteralValue(node: Node, source: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function isNegativeIntegerLiteral(source: string): boolean {
+  let value = source.replace(/[\s_]/g, "");
+  while (value.startsWith("(") && value.endsWith(")")) value = value.slice(1, -1);
+  if (!value.startsWith("-")) return false;
+  value = value.slice(1);
+  while (value.startsWith("(") && value.endsWith(")")) value = value.slice(1, -1);
+  return /^(?:0[xX][0-9a-fA-F]*[1-9a-fA-F][0-9a-fA-F]*|0[bB][01]*1[01]*|0[oO][0-7]*[1-7][0-7]*|[0-9]*[1-9][0-9]*)$/.test(value);
 }
 
 function isAuthenticationCookieName(name: string): boolean {
