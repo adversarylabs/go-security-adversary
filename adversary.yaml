@@ -1,5 +1,5 @@
 name: go/security
-version: 0.0.15
+version: 0.0.16
 description: Reviews Go trust boundaries, authentication, cryptography, transport security, and secret handling.
 
 triggers:
