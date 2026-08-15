@@ -17335,6 +17335,18 @@ var domain = {
       whyItMatters: "Authentication cookies contain reusable credentials and normally have no reason to be visible to browser JavaScript.",
       impact: "A script running in the origin, including one introduced through XSS, can steal the cookie and replay the user's session.",
       recommendation: "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie."
+    },
+    {
+      id: "go-security.pkg.signature-bypass",
+      title: "Package-manager signature verification is globally disabled",
+      concern: "global package-manager signature verification bypass",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} package-manager invocation${count === 1 ? "" : "s"} disable signature verification globally.`,
+      whyItMatters: "Repository and package signatures are the trust boundary that prevents a build host from installing substituted artifacts.",
+      impact: "A compromised mirror, cache, or local file can be installed as if it were a verified package, including when the flag was added only to accept one unsigned local RPM.",
+      recommendation: "Keep global GPG checks enabled. Import the signing key or scope a verification exception to one trusted local repository instead of --no-gpg-checks, --nogpgcheck, --nosignature, or --allow-unauthenticated."
     }
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
@@ -17363,7 +17375,8 @@ var domain = {
         ...mathRandSignals(file),
         ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
         ...lineSignals(file, "go-security.crypto.static-nonce", /(?:nonce|iv)\s*(?::=|=)\s*(?:make\(\[\]byte,\s*\d+\)|\[\]byte\{0)/i, () => "Static or zeroed nonce/IV pattern near cryptographic use."),
-        ...lineSignals(file, "go-security.pprof.exposed", /net\/http\/pprof|_\s+"net\/http\/pprof"/, () => "pprof is imported; ensure it is not exposed on a public listener.")
+        ...lineSignals(file, "go-security.pprof.exposed", /net\/http\/pprof|_\s+"net\/http\/pprof"/, () => "pprof is imported; ensure it is not exposed on a public listener."),
+        ...packageSignatureBypassSignals(file)
       ],
       positives: [
         ...positive(file, "go-security.jwt-algorithm-bound", /\bWithValidMethods\s*\(/, "JWT verification explicitly constrains accepted algorithms."),
@@ -17380,6 +17393,15 @@ function mathRandSignals(file) {
     /\brand\.(?:Intn|Read|Float64|Int63)\b/,
     () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand)."
   ).filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current));
+}
+var PACKAGE_SIGNATURE_BYPASS = /--(?:no-gpg-checks|nogpgcheck|nosignature|allow-unauthenticated)\b/;
+function packageSignatureBypassSignals(file) {
+  return lineSignals(
+    file,
+    "go-security.pkg.signature-bypass",
+    PACKAGE_SIGNATURE_BYPASS,
+    (match) => `This package-manager invocation disables signature verification (${match[0]}).`
+  ).filter((signal) => PACKAGE_SIGNATURE_BYPASS.test(signal.snippet.replace(/\/\/.*$/, "").replace(/\/\*.*$/, "")));
 }
 function isObviousTestSupportPath(path) {
   const normalized = path.replaceAll("\\", "/").toLowerCase();
@@ -22227,6 +22249,7 @@ var GO_SECURITY_MODEL_PROMPT = `You are reviewing Go code for trust-boundary and
 
 Authority (only report issues in this scope):
 - TLS and peer authentication
+- package-manager flags that globally disable signature verification
 - JWT and token validation
 - secrets on argv, in URL authority/path/query components, in HTTP errors or request logs, or in world-readable files
 - secret manager / cloud CLI output that may leak credentials
@@ -22693,7 +22716,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.20",
+    version: "0.0.21",
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
   app.rule("go-security.review", async (ctx) => {

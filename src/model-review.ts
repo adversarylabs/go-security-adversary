@@ -19,6 +19,7 @@ export const GO_SECURITY_MODEL_PROMPT = `You are reviewing Go code for trust-bou
 
 Authority (only report issues in this scope):
 - TLS and peer authentication
+- package-manager flags that globally disable signature verification
 - JWT and token validation
 - secrets on argv, in URL authority/path/query components, in HTTP errors or request logs, or in world-readable files
 - secret manager / cloud CLI output that may leak credentials
