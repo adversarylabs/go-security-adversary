@@ -25,6 +25,7 @@ test("P0 catalog security rules detect vulnerable fixtures and stay quiet on cle
     { dir: "p0-sql", id: "go-security.sql.string-concat" },
     { dir: "p0-shell", id: "go-security.cmd.shell" },
     { dir: "p0-path", id: "go-security.path.traversal" },
+    { dir: "p0-symlink-escape", id: "go-security.path.symlink-escape" },
     { dir: "p0-zip", id: "go-security.archive.zip-slip" },
     { dir: "p0-crypto-math-rand", id: "go-security.crypto.math-rand" },
     { dir: "p0-crypto-hardcoded-key", id: "go-security.crypto.hardcoded-key" },

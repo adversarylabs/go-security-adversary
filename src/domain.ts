@@ -250,6 +250,22 @@ export const domain: DomainDefinition = {
         "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie.",
     },
     {
+      id: "go-security.path.symlink-escape",
+      title: "A path is confined only by a final-component symlink check",
+      concern: "intermediate symlink escape before mount or open",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) =>
+        `${count} path${count === 1 ? " uses" : "s use"} os.Lstat as the only symlink gate before a mount or open.`,
+      whyItMatters:
+        "os.Lstat reports on the last component. An earlier symlink can redirect the later mount or open outside the intended root.",
+      impact:
+        "A crafted subpath such as evil/inner can publish or read a host path outside the guarded tree even when the final name is not a symlink.",
+      recommendation:
+        "Reject every symlink component, or open each component with O_NOFOLLOW / openat2 RESOLVE_BENEATH, then operate on the resulting descriptor.",
+    },
+    {
       id: "go-security.pkg.signature-bypass",
       title: "Package-manager signature verification is globally disabled",
       concern: "global package-manager signature verification bypass",

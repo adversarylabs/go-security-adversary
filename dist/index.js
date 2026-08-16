@@ -17337,6 +17337,18 @@ var domain = {
       recommendation: "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie."
     },
     {
+      id: "go-security.path.symlink-escape",
+      title: "A path is confined only by a final-component symlink check",
+      concern: "intermediate symlink escape before mount or open",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} path${count === 1 ? " uses" : "s use"} os.Lstat as the only symlink gate before a mount or open.`,
+      whyItMatters: "os.Lstat reports on the last component. An earlier symlink can redirect the later mount or open outside the intended root.",
+      impact: "A crafted subpath such as evil/inner can publish or read a host path outside the guarded tree even when the final name is not a symlink.",
+      recommendation: "Reject every symlink component, or open each component with O_NOFOLLOW / openat2 RESOLVE_BENEATH, then operate on the resulting descriptor."
+    },
+    {
       id: "go-security.pkg.signature-bypass",
       title: "Package-manager signature verification is globally disabled",
       concern: "global package-manager signature verification bypass",
@@ -21562,6 +21574,26 @@ async function analyzeDiscovery(discovery) {
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
           signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
           signals.push(...secretQueryExposureSignals(file, tree.rootNode));
+          const currentSymlinkSignals = symlinkEscapeSignals(file, tree.rootNode);
+          if (file.previous === void 0 || currentSymlinkSignals.length === 0) {
+            signals.push(...currentSymlinkSignals);
+          } else {
+            const previousTree = await parseGo(file.previous);
+            try {
+              const previousFile = {
+                path: file.path,
+                current: file.previous,
+                changedLines: /* @__PURE__ */ new Set(),
+                status: "repository"
+              };
+              const previousIdentities = new Set(
+                symlinkEscapeSignals(previousFile, previousTree.rootNode).map((signal) => String(signal.data.identity))
+              );
+              signals.push(...currentSymlinkSignals.filter((signal) => !previousIdentities.has(String(signal.data.identity))));
+            } finally {
+              previousTree.delete();
+            }
+          }
         } finally {
           tree.delete();
         }
@@ -21581,6 +21613,114 @@ async function analyzeDiscovery(discovery) {
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+function symlinkEscapeSignals(file, root) {
+  if (file.path.endsWith("_test.go") || isObviousSymlinkTestSupportPath(file.path)) return [];
+  const source = file.current;
+  const signals = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration")
+  ];
+  for (const fn of functions) {
+    const nameNode = fn.childForFieldName("name");
+    const functionName = nameNode === null ? "anonymous" : sourceText(nameNode, source);
+    const calls = descendants(fn, "call_expression").filter((call) => belongsDirectlyToFunction(call, fn)).sort((left, right) => left.startIndex - right.startIndex);
+    const guards = descendants(fn, "if_statement").filter((guard) => belongsDirectlyToFunction(guard, fn));
+    for (const lstat2 of calls) {
+      const callable = lstat2.childForFieldName("function");
+      const args2 = lstat2.childForFieldName("arguments")?.namedChildren ?? [];
+      if (callable === null || sourceText(callable, source).replace(/\s/g, "") !== "os.Lstat" || args2.length !== 1) continue;
+      if (hasAncestorBefore(lstat2, "for_statement", fn)) continue;
+      const info2 = assignedFirstResult(lstat2, source);
+      if (info2 === void 0) continue;
+      const guard = guards.find((candidate) => {
+        if (candidate.startIndex <= lstat2.endIndex) return false;
+        const condition = candidate.childForFieldName("condition");
+        const consequence = candidate.childForFieldName("consequence");
+        if (condition === null || consequence === null) return false;
+        const conditionText = sourceText(condition, source).replace(/\s/g, "");
+        return conditionText.includes(`${info2}.Mode()`) && conditionText.includes("os.ModeSymlink") && blockHasDirectReturn(consequence);
+      });
+      if (guard === void 0) continue;
+      const path = normalizedExpression(sourceText(args2[0], source));
+      const sink = calls.find((candidate) => candidate.startIndex > guard.endIndex && sinkUsesPath(candidate, path, source));
+      if (sink === void 0) continue;
+      if (/^[A-Za-z_]\w*$/.test(path) && identifierAssignedBetween(fn, path, lstat2.endIndex, sink.startIndex, source)) continue;
+      if (identifierAssignedBetween(fn, info2, lstat2.endIndex, guard.startIndex, source)) continue;
+      const evidence = [lstat2, guard, sink];
+      const anchor = evidence.find((node) => changed(file, node.startPosition.row + 1, node.endPosition.row + 1));
+      if (anchor === void 0) continue;
+      signals.push({
+        ruleId: "go-security.path.symlink-escape",
+        path: file.path,
+        line: anchor.startPosition.row + 1,
+        endLine: anchor.endPosition.row + 1,
+        message: `os.Lstat(${sourceText(args2[0], source)}) checks only the final path component before the same path is mounted or opened; an intermediate symlink can escape the intended root.`,
+        snippet: sourceText(anchor, source).trim().slice(0, 300),
+        data: {
+          guardedPath: sourceText(args2[0], source).trim(),
+          identity: `${functionName}|${path}|${sourceText(sink.childForFieldName("function"), source).replace(/\s/g, "")}`
+        }
+      });
+    }
+  }
+  return signals;
+}
+function identifierAssignedBetween(fn, name2, after, before, source) {
+  return [
+    ...descendants(fn, "short_var_declaration"),
+    ...descendants(fn, "assignment_statement")
+  ].some((assignment) => belongsDirectlyToFunction(assignment, fn) && assignment.startIndex > after && assignment.endIndex < before && directIdentifiers(assignment.childForFieldName("left"), source).includes(name2));
+}
+function isObviousSymlinkTestSupportPath(path) {
+  const parts2 = path.replaceAll("\\", "/").toLowerCase().split("/");
+  if (parts2.some((part) => /^(?:fake|fakes|fixture|fixtures|mock|mocks|testdata)$/.test(part))) return true;
+  const filename = parts2.at(-1) ?? "";
+  return /^(?:mock|fake)_.+\.go$/.test(filename) || /\.(?:mock|fake)\.go$/.test(filename);
+}
+function blockHasDirectReturn(block) {
+  const statements = block.namedChildren.find((node) => node.type === "statement_list");
+  return statements?.namedChildren.some((node) => node.type === "return_statement") ?? false;
+}
+function assignedFirstResult(call, source) {
+  let assignment = call.parent;
+  while (assignment !== null && assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") {
+    if (assignment.type === "expression_statement" || assignment.type === "statement_list") return void 0;
+    assignment = assignment.parent;
+  }
+  if (assignment === null) return void 0;
+  const left = assignment.childForFieldName("left")?.namedChildren ?? [];
+  const right = assignment.childForFieldName("right")?.namedChildren ?? [];
+  if (left.length === 0 || right.length === 0) return void 0;
+  const resultIndex = right.length === 1 ? 0 : right.findIndex((node) => call.startIndex >= node.startIndex && call.endIndex <= node.endIndex);
+  const result = left[resultIndex];
+  return result?.type === "identifier" ? sourceText(result, source) : void 0;
+}
+function sinkUsesPath(call, path, source) {
+  const callable = call.childForFieldName("function");
+  const args2 = call.childForFieldName("arguments")?.namedChildren ?? [];
+  if (callable === null || args2.length === 0) return false;
+  const name2 = sourceText(callable, source).replace(/\s/g, "");
+  const equalsPath = (node) => node !== void 0 && normalizedExpression(sourceText(node, source)) === path;
+  if (/^(?:unix|syscall|mount)\.Mount$/.test(name2)) return equalsPath(args2[0]);
+  if (/^os\.(?:Open|OpenFile|ReadFile|WriteFile|Create)$/.test(name2)) return equalsPath(args2[0]);
+  if (name2 === "http.ServeFile") return equalsPath(args2[2]);
+  if (name2 === "exec.Command" || name2 === "exec.CommandContext") {
+    const commandIndex = name2 === "exec.CommandContext" ? 1 : 0;
+    if (!/^["`]mount["`]$/.test(sourceText(args2[commandIndex], source).trim())) return false;
+    return args2.slice(commandIndex + 1).some(equalsPath);
+  }
+  return false;
+}
+function normalizedExpression(value) {
+  return stripOuterParentheses(value).replace(/\s/g, "");
+}
+function hasAncestorBefore(node, type, boundary) {
+  for (let parent = node.parent; parent !== null && parent.id !== boundary.id; parent = parent.parent) {
+    if (parent.type === type) return true;
+  }
+  return false;
 }
 function secretQueryExposureSignals(file, root) {
   if (file.path.endsWith("_test.go")) return [];
@@ -22195,6 +22335,7 @@ async function discoverSources(ctx) {
     files.push({
       path: source.path,
       current: source.content,
+      ...change.previous === void 0 ? {} : { previous: change.previous },
       changedLines: change.changedLines,
       status: change.status
     });
@@ -22215,7 +22356,17 @@ async function changedSource(ctx, path) {
   if (head !== void 0 && !ctx.change?.worktree) args2.push(head);
   args2.push("--", path);
   const patch = await gitOutput(ctx.repoPath, args2);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  let previous;
+  try {
+    previous = await gitOutput(ctx.repoPath, ["show", `${base}:${path}`]);
+  } catch {
+    previous = void 0;
+  }
+  return {
+    changedLines: changedLineNumbers(patch),
+    status: "modified",
+    ...previous === void 0 ? {} : { previous }
+  };
 }
 async function existsAtRevision(repoPath, revision, path) {
   try {
@@ -22720,7 +22871,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.21",
+    version: "0.0.22",
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
   app.rule("go-security.review", async (ctx) => {
