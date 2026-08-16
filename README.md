@@ -25,7 +25,7 @@ Highlights:
 | --- | --- |
 | Transport | `InsecureSkipVerify: true` |
 | Injection | SQL string concat / `fmt.Sprintf` into Query/Exec; `sh -c` / `bash -c` |
-| Paths | Unconfined `filepath.Join` + open; zip/tar slip on extract |
+| Paths | Unconfined `filepath.Join` + open; final-component `Lstat` before mount/open; zip/tar slip on extract |
 | Crypto | `math/rand` for tokens; hardcoded AES keys; static GCM nonces |
 | Secrets | Credentials in logs, argv, URLs, world-readable credential files |
 | Debug | `net/http/pprof` on a public server |

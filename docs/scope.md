@@ -16,6 +16,7 @@ Review Go trust boundaries: authn/authz, crypto, transport security, and secret 
 - Weak crypto, insecure random, bad TLS settings
 - Secret handling mistakes in Go (not raw secret scanning alone)
 - Trust-boundary violations and SSRF-prone URL handling in app code
+- Path and archive escapes, including incomplete symlink checks before mount/open
 
 ## Out of scope (not a miss for this adversary)
 
