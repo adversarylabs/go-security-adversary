@@ -1,48 +1,21 @@
-# go/security
+# Go Security adversary
 
-**go/security** reviews Go source for high-confidence **trust-boundary** defects: disabled TLS verification, SQL and shell injection, weak crypto, path/archive escapes, credential leakage, and exposed debug endpoints.
+Reviews Go trust boundaries, authentication, cryptography, transport security, and secret handling.
 
-It is a **domain security reviewer**, not a general Go linter. It prefers silence over noisy style advice. When it reports, it should be something a staff security engineer would open a ticket for.
+## Goals
 
-## What it does
+The adversary is designed to produce a small number of high-confidence,
+actionable findings grounded in concrete repository evidence. Its review should
+be deterministic where possible, explicit about impact, and quiet when the
+available evidence does not justify a finding.
 
-1. **Discovers** non-test Go files (`*.go`, excluding `*_test.go`).
-2. **Runs deterministic detectors** (regex / structure over source) that emit stable rule ids with file:line evidence.
-3. **Synthesizes a review** (severity, impact, recommendation) from those signals.
-4. Optionally **enhances** with a model when the CLI provides one (`permissions.model: true`) — explanation and ranking only, not freestyle vulnerability invention.
+## Scope
 
-It never executes the scanned project, never installs dependencies into it, and never needs network access to the target.
+It evaluates changed Go code for command, path, archive, cryptography, TLS, credential, SQL, token, cookie, signature, and debug-surface vulnerabilities.
 
-## What it detects
+The complete detector or review inventory is maintained in
+[CHECKS.md](CHECKS.md).
 
-Every **shipped rule id**, severity, and short description lives in **[CHECKS.md](CHECKS.md)** — the audit surface for “what does this adversary look for?”
+## Boundaries
 
-Broader priority / roadmap notes (P0 / P1 / LLM-only) are in [docs/issue-catalog.md](docs/issue-catalog.md).
-
-Highlights:
-
-| Area | Examples |
-| --- | --- |
-| Transport | `InsecureSkipVerify: true` |
-| Injection | SQL string concat / `fmt.Sprintf` into Query/Exec; `sh -c` / `bash -c` |
-| Paths | Unconfined `filepath.Join` + open; final-component `Lstat` before mount/open; zip/tar slip on extract |
-| Crypto | `math/rand` for tokens; hardcoded AES keys; static GCM nonces |
-| Secrets | Credentials in logs, argv, URLs, world-readable credential files |
-| Debug | `net/http/pprof` on a public server |
-| Auth | JWT parse without algorithm allowlist |
-
-### Ownership boundaries
-
-Other official adversaries own adjacent classes so findings stay non-duplicative:
-
-| Concern | Owned by |
-| --- | --- |
-| HTTP server/client timeouts, CORS, open redirects, WebSocket origin | [`go/http`](https://github.com/adversarylabs/go-http-adversary) |
-| DB transaction/row lifecycle, GORM raw SQL (ORM-specific) | [`go/database`](https://github.com/adversarylabs/go-database-adversary) |
-| High-precision committed secrets (AWS keys, PATs, etc.) | [`security/secrets`](https://github.com/adversarylabs/secrets-adversary) |
-
-## Precision stance
-
-- **High confidence** only for deterministic, evidence-backed patterns.
-- Clean fixtures must stay quiet; vulnerable fixtures must fire (see `fixtures/p0-*` and graded tiers).
-- Prefer missing a weak signal over a false positive on normal Go code (e.g. path traversal only when a join is **opened** without confinement).
+It owns only this Go specialty. Other Go concerns remain with the corresponding `go/*` adversaries, and it does not execute or modify the target repository.
