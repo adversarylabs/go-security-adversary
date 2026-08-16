@@ -306,7 +306,6 @@ export const domain: DomainDefinition = {
         ...lineSignals(file, "go-security.sql.string-concat", /(?:Query|Exec|QueryContext|ExecContext)\s*\(\s*(?:fmt\.Sprintf|["'`].*(?:\+|fmt\.))/, () => "SQL appears constructed via string formatting or concatenation."),
         ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
         ...pathTraversalSignals(file),
-        ...symlinkEscapeSignals(file),
         ...zipSlipSignals(file),
         ...mathRandSignals(file),
         ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
@@ -365,38 +364,6 @@ function isObviousTestSupportPath(path: string): boolean {
  * (os.Open/ReadFile/…) without a confinement guard (IsLocal, HasPrefix+Clean,
  * securejoin, os.OpenRoot / os.Root). Bare filepath.Join for internal paths stays quiet.
  */
-function symlinkEscapeSignals(file: SourceRevision) {
-  if (file.path.endsWith("_test.go") || isObviousTestSupportPath(file.path)) return [];
-  const source = file.current;
-  if (!/\bos\.Lstat\s*\(/.test(source)) return [];
-  if (!/(?:&\s*os\.ModeSymlink|\bos\.ModeSymlink\b)/.test(source)) return [];
-  const usesGuardedPath =
-    /\b(?:unix|syscall)\.Mount\s*\(/.test(source) ||
-    /\bmount\.Mount\s*\(/.test(source) ||
-    /\bexec\.Command(?:Context)?\s*\(\s*["']mount["']/.test(source) ||
-    /\bos\.(?:Open|OpenFile|ReadFile|WriteFile|Create)\s*\(/.test(source) ||
-    /\bhttp\.ServeFile\s*\(/.test(source);
-  if (!usesGuardedPath) return [];
-  if (hasComponentSafeResolve(source)) return [];
-  return lineSignals(
-    file,
-    "go-security.path.symlink-escape",
-    /\bos\.Lstat\s*\(/,
-    () => "os.Lstat only inspects the final path component; an intermediate symlink can escape the intended root before mount/open.",
-  );
-}
-
-function hasComponentSafeResolve(source: string): boolean {
-  if (/\bRESOLVE_BENEATH\b/.test(source) || /\bunix\.Openat2\b/.test(source)) return true;
-  if (/\bO_NOFOLLOW\b/.test(source) && /\brange\b/.test(source)) return true;
-  if (/\bfilepath\.EvalSymlinks\s*\(/.test(source) &&
-    /(?:IsSubPath|HasPrefix|IsLocal)\s*\(/.test(source)) return true;
-  if (/\brange\b/.test(source) && /(?:strings\.Split|filepath\.Split|filepath\.SplitList)\s*\(/.test(source)) {
-    return true;
-  }
-  return false;
-}
-
 function pathTraversalSignals(file: SourceRevision) {
   if (file.path.endsWith("_test.go")) return [];
   const source = file.current;

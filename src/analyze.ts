@@ -18,6 +18,28 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
           signals.push(...variableTimeCredentialComparisonSignals(file, tree.rootNode));
           signals.push(...authenticationCookieHttpOnlySignals(file, tree.rootNode));
           signals.push(...secretQueryExposureSignals(file, tree.rootNode));
+          const currentSymlinkSignals = symlinkEscapeSignals(file, tree.rootNode);
+          if (file.previous === undefined || currentSymlinkSignals.length === 0) {
+            signals.push(...currentSymlinkSignals);
+          } else {
+            const previousTree = await parseGo(file.previous);
+            try {
+              const previousFile: SourceRevision = {
+                path: file.path,
+                current: file.previous,
+                changedLines: new Set(),
+                status: "repository",
+              };
+              const previousIdentities = new Set(
+                symlinkEscapeSignals(previousFile, previousTree.rootNode)
+                  .map((signal) => String(signal.data.identity)),
+              );
+              signals.push(...currentSymlinkSignals.filter((signal) =>
+                !previousIdentities.has(String(signal.data.identity))));
+            } finally {
+              previousTree.delete();
+            }
+          }
         } finally {
           tree.delete();
         }
@@ -38,6 +60,138 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+function symlinkEscapeSignals(file: SourceRevision, root: Node): Signal[] {
+  if (file.path.endsWith("_test.go") || isObviousSymlinkTestSupportPath(file.path)) return [];
+  const source = file.current;
+  const signals: Signal[] = [];
+  const functions = [
+    ...descendants(root, "function_declaration"),
+    ...descendants(root, "method_declaration"),
+  ];
+  for (const fn of functions) {
+    const nameNode = fn.childForFieldName("name");
+    const functionName = nameNode === null ? "anonymous" : sourceText(nameNode, source);
+    const calls = descendants(fn, "call_expression")
+      .filter((call) => belongsDirectlyToFunction(call, fn))
+      .sort((left, right) => left.startIndex - right.startIndex);
+    const guards = descendants(fn, "if_statement")
+      .filter((guard) => belongsDirectlyToFunction(guard, fn));
+    for (const lstat of calls) {
+      const callable = lstat.childForFieldName("function");
+      const args = lstat.childForFieldName("arguments")?.namedChildren ?? [];
+      if (callable === null || sourceText(callable, source).replace(/\s/g, "") !== "os.Lstat" || args.length !== 1) continue;
+      if (hasAncestorBefore(lstat, "for_statement", fn)) continue;
+      const info = assignedFirstResult(lstat, source);
+      if (info === undefined) continue;
+      const guard = guards.find((candidate) => {
+        if (candidate.startIndex <= lstat.endIndex) return false;
+        const condition = candidate.childForFieldName("condition");
+        const consequence = candidate.childForFieldName("consequence");
+        if (condition === null || consequence === null) return false;
+        const conditionText = sourceText(condition, source).replace(/\s/g, "");
+        return conditionText.includes(`${info}.Mode()`) && conditionText.includes("os.ModeSymlink") &&
+          blockHasDirectReturn(consequence);
+      });
+      if (guard === undefined) continue;
+      const path = normalizedExpression(sourceText(args[0]!, source));
+      const sink = calls.find((candidate) =>
+        candidate.startIndex > guard.endIndex && sinkUsesPath(candidate, path, source));
+      if (sink === undefined) continue;
+      if (/^[A-Za-z_]\w*$/.test(path) && identifierAssignedBetween(fn, path, lstat.endIndex, sink.startIndex, source)) continue;
+      if (identifierAssignedBetween(fn, info, lstat.endIndex, guard.startIndex, source)) continue;
+      const evidence = [lstat, guard, sink];
+      const anchor = evidence.find((node) =>
+        changed(file, node.startPosition.row + 1, node.endPosition.row + 1));
+      if (anchor === undefined) continue;
+      signals.push({
+        ruleId: "go-security.path.symlink-escape",
+        path: file.path,
+        line: anchor.startPosition.row + 1,
+        endLine: anchor.endPosition.row + 1,
+        message: `os.Lstat(${sourceText(args[0]!, source)}) checks only the final path component before the same path is mounted or opened; an intermediate symlink can escape the intended root.`,
+        snippet: sourceText(anchor, source).trim().slice(0, 300),
+        data: {
+          guardedPath: sourceText(args[0]!, source).trim(),
+          identity: `${functionName}|${path}|${sourceText(sink.childForFieldName("function")!, source).replace(/\s/g, "")}`,
+        },
+      });
+    }
+  }
+  return signals;
+}
+
+function identifierAssignedBetween(
+  fn: Node,
+  name: string,
+  after: number,
+  before: number,
+  source: string,
+): boolean {
+  return [
+    ...descendants(fn, "short_var_declaration"),
+    ...descendants(fn, "assignment_statement"),
+  ].some((assignment) =>
+    belongsDirectlyToFunction(assignment, fn) && assignment.startIndex > after && assignment.endIndex < before &&
+    directIdentifiers(assignment.childForFieldName("left"), source).includes(name));
+}
+
+function isObviousSymlinkTestSupportPath(path: string): boolean {
+  const parts = path.replaceAll("\\", "/").toLowerCase().split("/");
+  if (parts.some((part) => /^(?:fake|fakes|fixture|fixtures|mock|mocks|testdata)$/.test(part))) return true;
+  const filename = parts.at(-1) ?? "";
+  return /^(?:mock|fake)_.+\.go$/.test(filename) || /\.(?:mock|fake)\.go$/.test(filename);
+}
+
+function blockHasDirectReturn(block: Node): boolean {
+  const statements = block.namedChildren.find((node) => node.type === "statement_list");
+  return statements?.namedChildren.some((node) => node.type === "return_statement") ?? false;
+}
+
+function assignedFirstResult(call: Node, source: string): string | undefined {
+  let assignment = call.parent;
+  while (assignment !== null && assignment.type !== "short_var_declaration" && assignment.type !== "assignment_statement") {
+    if (assignment.type === "expression_statement" || assignment.type === "statement_list") return undefined;
+    assignment = assignment.parent;
+  }
+  if (assignment === null) return undefined;
+  const left = assignment.childForFieldName("left")?.namedChildren ?? [];
+  const right = assignment.childForFieldName("right")?.namedChildren ?? [];
+  if (left.length === 0 || right.length === 0) return undefined;
+  const resultIndex = right.length === 1 ? 0 : right.findIndex((node) =>
+    call.startIndex >= node.startIndex && call.endIndex <= node.endIndex);
+  const result = left[resultIndex];
+  return result?.type === "identifier" ? sourceText(result, source) : undefined;
+}
+
+function sinkUsesPath(call: Node, path: string, source: string): boolean {
+  const callable = call.childForFieldName("function");
+  const args = call.childForFieldName("arguments")?.namedChildren ?? [];
+  if (callable === null || args.length === 0) return false;
+  const name = sourceText(callable, source).replace(/\s/g, "");
+  const equalsPath = (node: Node | undefined) =>
+    node !== undefined && normalizedExpression(sourceText(node, source)) === path;
+  if (/^(?:unix|syscall|mount)\.Mount$/.test(name)) return equalsPath(args[0]);
+  if (/^os\.(?:Open|OpenFile|ReadFile|WriteFile|Create)$/.test(name)) return equalsPath(args[0]);
+  if (name === "http.ServeFile") return equalsPath(args[2]);
+  if (name === "exec.Command" || name === "exec.CommandContext") {
+    const commandIndex = name === "exec.CommandContext" ? 1 : 0;
+    if (!/^["`]mount["`]$/.test(sourceText(args[commandIndex]!, source).trim())) return false;
+    return args.slice(commandIndex + 1).some(equalsPath);
+  }
+  return false;
+}
+
+function normalizedExpression(value: string): string {
+  return stripOuterParentheses(value).replace(/\s/g, "");
+}
+
+function hasAncestorBefore(node: Node, type: string, boundary: Node): boolean {
+  for (let parent = node.parent; parent !== null && parent.id !== boundary.id; parent = parent.parent) {
+    if (parent.type === type) return true;
+  }
+  return false;
 }
 
 interface SecretQueryMutation {

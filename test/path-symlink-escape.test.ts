@@ -63,7 +63,8 @@ func resolve(root, mountPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(resolved, root) {
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", os.ErrInvalid
 	}
 	return resolved, os.WriteFile(resolved, nil, 0o600)
@@ -94,6 +95,60 @@ func describe(path string) (bool, error) {
 		return false, err
 	}
 	return info.Mode()&os.ModeSymlink != 0, nil
+}
+`,
+  });
+  assert.equal(output.findings.some((item) => item.ruleId === ruleId), false);
+});
+
+test("stays quiet when Lstat and open occur in unrelated functions", async () => {
+  const output = await review({
+    "unrelated.go": `package sample
+
+import "os"
+
+func isLink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil { return false, err }
+	if info.Mode()&os.ModeSymlink != 0 { return true, nil }
+	return false, nil
+}
+
+func readConfig() (*os.File, error) { return os.Open("/etc/sample.conf") }
+`,
+  });
+  assert.equal(output.findings.some((item) => item.ruleId === ruleId), false);
+});
+
+test("an unrelated safe resolver does not suppress a vulnerable mount", async () => {
+  const source = vulnerableSource().replace(
+    "func publish",
+    `func safe(root, path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil { return "", err }
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) { return "", os.ErrInvalid }
+	return resolved, nil
+}
+
+func publish`,
+  ).replace('"path/filepath"', '"path/filepath"\n\t"strings"');
+  const output = await review({ "nodeserver.go": source });
+  assert.equal(output.findings.some((item) => item.ruleId === ruleId), true);
+});
+
+test("stays quiet when the path variable is replaced before the open", async () => {
+  const output = await review({
+    "reassigned.go": `package sample
+
+import "os"
+
+func openConfig(candidate string) (*os.File, error) {
+	info, err := os.Lstat(candidate)
+	if err != nil { return nil, err }
+	if info.Mode()&os.ModeSymlink != 0 { return nil, os.ErrInvalid }
+	candidate = "/etc/sample.conf"
+	return os.Open(candidate)
 }
 `,
   });

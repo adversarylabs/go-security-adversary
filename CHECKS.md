@@ -138,7 +138,7 @@ Regression entry: [`test/p0-catalog.test.ts`](test/p0-catalog.test.ts) (P0 subse
 | **What** | `os.Lstat` plus a `ModeSymlink` check is the only symlink gate before a mount or open |
 | **Why** | `Lstat` reports on the last component. An intermediate symlink can redirect the later operation outside the intended root |
 | **Looks for** | Non-test Go that calls `os.Lstat`, tests `os.ModeSymlink`, and then `mount` / `os.Open` / `ReadFile` / `Create` / `http.ServeFile` the path |
-| **Stays quiet when** | Every component is inspected (`range` + `strings.Split` / `filepath.Split`); `O_NOFOLLOW` in that walk; `openat2` / `RESOLVE_BENEATH`; full-path `EvalSymlinks` plus containment (`IsSubPath` / `HasPrefix` / `IsLocal`); tests |
+| **Stays quiet when** | Every component is inspected (`range` + `strings.Split` / `filepath.Split`); `O_NOFOLLOW` in that walk; `openat2` / `RESOLVE_BENEATH`; full-path `EvalSymlinks` plus boundary-aware containment such as `filepath.Rel`; tests |
 | **Deliberate false negatives** | Cross-function Lstat vs mount; syscall names not listed; symlink rejection that does not mention `ModeSymlink` |
 | **Public grounding** | [fluid-cloudnative/fluid#6159](https://github.com/fluid-cloudnative/fluid/pull/6159) — `subPath "evil"` rejected, `"evil/inner"` escaped |
 | **Fixture** | `fixtures/p0-symlink-escape/` |
