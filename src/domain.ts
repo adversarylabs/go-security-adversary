@@ -249,6 +249,22 @@ export const domain: DomainDefinition = {
       recommendation:
         "Set HttpOnly: true on session and authentication cookies, and move any legitimate browser-readable state into a separate non-credential cookie.",
     },
+    {
+      id: "go-security.pkg.signature-bypass",
+      title: "Package-manager signature verification is globally disabled",
+      concern: "global package-manager signature verification bypass",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) =>
+        `${count} package-manager invocation${count === 1 ? "" : "s"} disable signature verification globally.`,
+      whyItMatters:
+        "Repository and package signatures are the trust boundary that prevents a build host from installing substituted artifacts.",
+      impact:
+        "A compromised mirror, cache, or local file can be installed as if it were a verified package, including when the flag was added only to accept one unsigned local RPM.",
+      recommendation:
+        "Keep global GPG checks enabled. Import the signing key or scope a verification exception to one trusted local repository instead of --no-gpg-checks, --nogpgcheck, --nosignature, or --allow-unauthenticated.",
+    },
   ],
   noRiskSummary: "No high-confidence trust-boundary, credential, or transport defect was found in the reviewed code.",
   approvalSummary: "I would approve the reviewed security boundaries represented by this change.",
@@ -279,6 +295,7 @@ export const domain: DomainDefinition = {
         ...lineSignals(file, "go-security.crypto.hardcoded-key", /(?:aes|cipher)\.(?:NewCipher|NewGCM)\(\s*\[\]byte\{/, () => "Hardcoded key material appears near a cipher constructor."),
         ...lineSignals(file, "go-security.crypto.static-nonce", /(?:nonce|iv)\s*(?::=|=)\s*(?:make\(\[\]byte,\s*\d+\)|\[\]byte\{0)/i, () => "Static or zeroed nonce/IV pattern near cryptographic use."),
         ...lineSignals(file, "go-security.pprof.exposed", /net\/http\/pprof|_\s+"net\/http\/pprof"/, () => "pprof is imported; ensure it is not exposed on a public listener."),
+        ...packageSignatureBypassSignals(file),
       ],
       positives: [
         ...positive(file, "go-security.jwt-algorithm-bound", /\bWithValidMethods\s*\(/, "JWT verification explicitly constrains accepted algorithms."),
@@ -296,6 +313,24 @@ function mathRandSignals(file: SourceRevision) {
     /\brand\.(?:Intn|Read|Float64|Int63)\b/,
     () => "math/rand used; ensure this is not security-sensitive (prefer crypto/rand).",
   ).filter(() => /\bmath\/rand\b/.test(file.current) && /token|secret|password|nonce|session|key/i.test(file.current));
+}
+
+const PACKAGE_SIGNATURE_BYPASS =
+  /--(?:no-gpg-checks|nogpgcheck|nosignature|allow-unauthenticated)\b/;
+
+function packageSignatureBypassSignals(file: SourceRevision) {
+  return lineSignals(
+    file,
+    "go-security.pkg.signature-bypass",
+    PACKAGE_SIGNATURE_BYPASS,
+    (match) => `This package-manager invocation disables signature verification (${match[0]}).`,
+  ).filter((signal) => {
+    const code = signal.snippet.replace(/\/\/.*$/, "").replace(/\/\*.*$/, "");
+    if (!PACKAGE_SIGNATURE_BYPASS.test(code)) return false;
+    return /\bexec\.Command(?:Context)?\s*\(/.test(code) ||
+      /\bappend\s*\(\s*[A-Za-z_]\w*(?:args?|flags?|options?)\b/i.test(code) ||
+      /\b[A-Za-z_]\w*(?:args?|flags?|options?)\s*:?=\s*\[\]string\s*\{/i.test(code);
+  });
 }
 
 function isObviousTestSupportPath(path: string): boolean {
