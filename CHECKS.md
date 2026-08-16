@@ -67,8 +67,8 @@ Regression entry: [`test/p0-catalog.test.ts`](test/p0-catalog.test.ts) (P0 subse
 | --- | --- |
 | **What** | A global package-manager flag disables signature verification |
 | **Why** | Repo and package signatures are the trust boundary for installed artifacts |
-| **Looks for** | Live `--no-gpg-checks`, `--nogpgcheck`, `--nosignature`, or `--allow-unauthenticated` in non-test Go |
-| **Stays quiet when** | The flag is only in a comment; the code uses a narrower local-file allowance such as `--allow-unsigned-rpm`; or a repo-scoped `gpgcheck=0` is not one of these global flags |
+| **Looks for** | Live `--no-gpg-checks`, `--nogpgcheck`, `--nosignature`, or `--allow-unauthenticated` in a subprocess invocation or argument/flag builder in non-test Go |
+| **Stays quiet when** | The flag is only in a comment or validation/blocklist table; the code uses a narrower local-file allowance such as `--allow-unsigned-rpm`; or a repo-scoped `gpgcheck=0` is not one of these global flags |
 | **Remediation** | Keep global checks enabled; import the signing key or scope a bypass to one trusted local repository |
 
 ### `go-security.jwt-validation`

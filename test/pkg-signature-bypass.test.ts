@@ -70,6 +70,25 @@ func flags() []string {
   );
 });
 
+test("stays quiet when banned flags are listed for validation", async () => {
+  const output = await review({
+    "policy.go": `package policy
+
+var prohibited = map[string]bool{
+	"--no-gpg-checks": true,
+	"--allow-unauthenticated": true,
+}
+
+func Allowed(flag string) bool { return !prohibited[flag] }
+`,
+  });
+  assert.equal(
+    output.findings.some((item) => item.ruleId === ruleId),
+    false,
+    JSON.stringify(output.findings, null, 2),
+  );
+});
+
 test("stays quiet in _test.go even when the bypass flag is present", async () => {
   const output = await review({
     "install_test.go": `package distro

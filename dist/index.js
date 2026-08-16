@@ -17401,7 +17401,11 @@ function packageSignatureBypassSignals(file) {
     "go-security.pkg.signature-bypass",
     PACKAGE_SIGNATURE_BYPASS,
     (match) => `This package-manager invocation disables signature verification (${match[0]}).`
-  ).filter((signal) => PACKAGE_SIGNATURE_BYPASS.test(signal.snippet.replace(/\/\/.*$/, "").replace(/\/\*.*$/, "")));
+  ).filter((signal) => {
+    const code = signal.snippet.replace(/\/\/.*$/, "").replace(/\/\*.*$/, "");
+    if (!PACKAGE_SIGNATURE_BYPASS.test(code)) return false;
+    return /\bexec\.Command(?:Context)?\s*\(/.test(code) || /\bappend\s*\(\s*[A-Za-z_]\w*(?:args?|flags?|options?)\b/i.test(code) || /\b[A-Za-z_]\w*(?:args?|flags?|options?)\s*:?=\s*\[\]string\s*\{/i.test(code);
+  });
 }
 function isObviousTestSupportPath(path) {
   const normalized = path.replaceAll("\\", "/").toLowerCase();
