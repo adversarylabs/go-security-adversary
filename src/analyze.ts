@@ -1,5 +1,6 @@
 import { domain } from "./domain.js";
 import { descendants, parseGo, sourceText } from "./parser.js";
+import { selfRateLimitDenialSignals } from "./self-rate-limit.js";
 import { type Analysis, type Discovery, type PositiveSignal, type Signal, type SourceRevision } from "./types.js";
 import { type Node } from "web-tree-sitter";
 
@@ -51,6 +52,8 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
       parseErrors.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  signals.push(...await selfRateLimitDenialSignals(discovery.files));
 
   return {
     mode: discovery.mode,

@@ -95,18 +95,6 @@ export const domain: DomainDefinition = {
     },
 
     {
-      id: "go-security.tls.insecure-skip-verify",
-      title: "TLS InsecureSkipVerify enabled",
-      concern: "disabled TLS peer verification",
-      category: "security",
-      severity: "critical",
-      confidence: "high",
-      summary: (count) => `${count} TLS configuration${count === 1 ? "" : "s"} set InsecureSkipVerify true.`,
-      whyItMatters: "Encryption without peer authentication does not establish who receives credentials or sensitive traffic.",
-      impact: "An active network attacker can impersonate the service and read or modify traffic.",
-      recommendation: "Remove InsecureSkipVerify and configure trusted roots and ServerName.",
-    },
-    {
       id: "go-security.sql.string-concat",
       title: "SQL built via string concatenation",
       concern: "SQL injection via string formatting",
@@ -218,6 +206,22 @@ export const domain: DomainDefinition = {
       recommendation: "Return an explicit invalid-statement error when a subject element is nil.",
     },
     {
+      id: "go-security.rate-limit.self-denial",
+      title: "A security rate limit can deny the service's own calls",
+      concern: "rate limiting applied without the established service-self exemption",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        `${count} changed rate-limit path${count === 1 ? "" : "s"} omit the service's established self-caller exemption.`,
+      whyItMatters:
+        "A defensive control must not deny the service's own authenticated health or maintenance traffic when the repository already distinguishes those calls.",
+      impact:
+        "An operator-configured limit can reject service-owned calls, fail health checks, and mark an otherwise healthy service unavailable.",
+      recommendation:
+        "Pass the request context into the rate-limit boundary and bypass the limiter only when the repository's proven self-caller identity check matches; keep enforcement tests for non-self callers.",
+    },
+    {
       id: "go-security.crypto.constant-time",
       title: "Webhook credential uses a variable-time comparison",
       concern: "variable-time comparison of an attacker-supplied webhook credential",
@@ -302,7 +306,6 @@ export const domain: DomainDefinition = {
         ...tokenInUrlSignals(file),
         ...credentialFileModeSignals(file),
         ...secretCommandOutputSignals(file),
-        // Catalog alias: go-security.tls.insecure-skip-verify is covered by go-security.tls-verification above.
         ...lineSignals(file, "go-security.sql.string-concat", /(?:Query|Exec|QueryContext|ExecContext)\s*\(\s*(?:fmt\.Sprintf|["'`].*(?:\+|fmt\.))/, () => "SQL appears constructed via string formatting or concatenation."),
         ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
         ...pathTraversalSignals(file),

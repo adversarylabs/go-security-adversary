@@ -181,6 +181,39 @@ func fetch(token string) {
   void first;
 });
 
+test("unrecognized model evidence cannot emit observations or block ship", async () => {
+  const root = await writeFixture("ungrounded-model", {
+    "main.go": "package main\n\nfunc ready() bool { return true }\n",
+  });
+  const model = capturingModel({
+    assessment: {
+      risk: "high",
+      summary: "An unsupported security claim.",
+    },
+    ship: false,
+    primaryConcern: "an unsupported security claim",
+    observations: [
+      {
+        id: "invented-evidence",
+        title: "Unsupported security claim",
+        category: "auth-boundary",
+        severity: "high",
+        confidence: "high",
+        summary: "This claim cites no prepared source.",
+        whyItMatters: "Ungrounded claims are not auditable.",
+        recommendation: "Use only prepared evidence identifiers.",
+        evidenceIds: ["file:not-prepared.go"],
+      },
+    ],
+  });
+
+  const result = await runWithModel(root, model);
+  assert.equal(result.assessment?.risk, "none");
+  assert.equal(result.opinion?.ship, true);
+  assert.equal(result.observations.some((observation) => observation.key?.includes("invented-evidence")), false);
+  assert.equal(result.assessment?.summary, "No evidence-backed model security concern was found.");
+});
+
 test("new static rules detect secret-on-argv, token-in-url, and permissive credential modes", async () => {
   const root = await writeFixture("new-rules", {
     "main.go": `package main

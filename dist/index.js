@@ -17193,18 +17193,6 @@ var domain = {
       recommendation: "Avoid printing raw tool output for secret commands; surface a sanitized error and keep secret bytes out of fmt/log arguments."
     },
     {
-      id: "go-security.tls.insecure-skip-verify",
-      title: "TLS InsecureSkipVerify enabled",
-      concern: "disabled TLS peer verification",
-      category: "security",
-      severity: "critical",
-      confidence: "high",
-      summary: (count) => `${count} TLS configuration${count === 1 ? "" : "s"} set InsecureSkipVerify true.`,
-      whyItMatters: "Encryption without peer authentication does not establish who receives credentials or sensitive traffic.",
-      impact: "An active network attacker can impersonate the service and read or modify traffic.",
-      recommendation: "Remove InsecureSkipVerify and configure trusted roots and ServerName."
-    },
-    {
       id: "go-security.sql.string-concat",
       title: "SQL built via string concatenation",
       concern: "SQL injection via string formatting",
@@ -17313,6 +17301,18 @@ var domain = {
       recommendation: "Return an explicit invalid-statement error when a subject element is nil."
     },
     {
+      id: "go-security.rate-limit.self-denial",
+      title: "A security rate limit can deny the service's own calls",
+      concern: "rate limiting applied without the established service-self exemption",
+      category: "security",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => `${count} changed rate-limit path${count === 1 ? "" : "s"} omit the service's established self-caller exemption.`,
+      whyItMatters: "A defensive control must not deny the service's own authenticated health or maintenance traffic when the repository already distinguishes those calls.",
+      impact: "An operator-configured limit can reject service-owned calls, fail health checks, and mark an otherwise healthy service unavailable.",
+      recommendation: "Pass the request context into the rate-limit boundary and bypass the limiter only when the repository's proven self-caller identity check matches; keep enforcement tests for non-self callers."
+    },
+    {
       id: "go-security.crypto.constant-time",
       title: "Webhook credential uses a variable-time comparison",
       concern: "variable-time comparison of an attacker-supplied webhook credential",
@@ -17379,7 +17379,6 @@ var domain = {
         ...tokenInUrlSignals(file),
         ...credentialFileModeSignals(file),
         ...secretCommandOutputSignals(file),
-        // Catalog alias: go-security.tls.insecure-skip-verify is covered by go-security.tls-verification above.
         ...lineSignals(file, "go-security.sql.string-concat", /(?:Query|Exec|QueryContext|ExecContext)\s*\(\s*(?:fmt\.Sprintf|["'`].*(?:\+|fmt\.))/, () => "SQL appears constructed via string formatting or concatenation."),
         ...lineSignals(file, "go-security.cmd.shell", /exec\.Command(?:Context)?\(\s*["'](?:ba)?sh["']\s*,\s*["']-c["']/, () => "A shell is invoked with -c, which is dangerous with untrusted input."),
         ...pathTraversalSignals(file),
@@ -21559,6 +21558,397 @@ function sourceText(node, source) {
   return source.slice(node.startIndex, node.endIndex);
 }
 
+// src/self-rate-limit.ts
+import { dirname as dirname3 } from "node:path";
+var RULE_ID = "go-security.rate-limit.self-denial";
+var RATE_LIMIT_MEMBER = /^(?:RateLimit|rateLimit|Allow|Wait)$/;
+var SELF_HELPER_NAME = /^(?:isAgent|isSelf|isOwnProcess|isCurrentProcess|isServerProcess)$/;
+var CONTEXT_PID_MEMBER = /^(?:CallerPID|PIDFromContext|ProcessIDFromContext|CallerProcessID)$/;
+async function selfRateLimitDenialSignals(files) {
+  const current = await rawFindings(files);
+  const previousFiles = previousRevisions(files);
+  const comparePrevious = files.some((file) => file.status === "modified" && file.previous !== void 0);
+  const previous = !comparePrevious || previousFiles.length === 0 ? [] : await rawFindings(previousFiles);
+  const previousFingerprints = new Set(previous.map((finding) => finding.fingerprint));
+  const emittedGroups = /* @__PURE__ */ new Set();
+  return current.flatMap((finding) => {
+    if (previousFingerprints.has(finding.fingerprint)) return [];
+    const anchor = changedAnchor(finding);
+    if (anchor === void 0) return [];
+    if (emittedGroups.has(finding.groupFingerprint)) return [];
+    emittedGroups.add(finding.groupFingerprint);
+    return [{
+      ruleId: RULE_ID,
+      path: anchor.path,
+      line: anchor.line,
+      ...anchor.endLine === anchor.line ? {} : { endLine: anchor.endLine },
+      message: `${finding.handler.name} adds rate limiting without the service's established self-caller exemption; an operator limit can deny service-owned health or maintenance calls.`,
+      snippet: anchor.snippet,
+      data: {
+        handler: finding.handler.name,
+        rateLimitCall: finding.rateCall.member,
+        establishedSelfCheck: finding.established.fn.name,
+        establishedPath: finding.established.fn.file.path,
+        semanticFingerprint: finding.fingerprint
+      }
+    }];
+  });
+}
+async function rawFindings(files) {
+  const goFiles = files.filter((file) => file.path.endsWith(".go") && !file.path.endsWith("_test.go") && !/(?:^|\/)(?:vendor|testdata|generated|mocks?|fakes?)(?:\/|$)/i.test(file.path));
+  const program = await collectProgram(goFiles);
+  const established = program.selfHelpers.filter((helper) => mentionsHealth(helper.fn.file.current) && program.functions.some((fn) => fn.familyKey === helper.fn.familyKey && fn.packageKey === helper.fn.packageKey && fn.calls.some((call) => isRateLimitCall(call) && guardedBySelfExemption(call, helper, fn))));
+  if (established.length === 0) return [];
+  const findings = [];
+  for (const handler of program.functions) {
+    if (handler.receiverType === void 0 || !isContextBearingHandler(handler)) continue;
+    if (/rate.?limit/i.test(handler.name)) continue;
+    const familyExemption = established.find((helper) => helper.fn.familyKey === handler.familyKey);
+    if (familyExemption === void 0) continue;
+    for (const rateCall of handler.calls) {
+      if (!rateCall.executable || !isRateLimitCall(rateCall)) continue;
+      if (!receiverStartsWith(rateCall.receiver, handler.receiverName)) continue;
+      if (!bindingUnshadowed(handler, handler.receiverName, rateCall.start)) continue;
+      if (guardedByAnyLocalSelfExemption(rateCall, handler, program.selfHelpers)) continue;
+      if (resolvedRateLimitHelperIsSafe(rateCall, handler, program)) continue;
+      findings.push({
+        fingerprint: [
+          handler.familyKey,
+          handler.packageKey,
+          handler.receiverType,
+          handler.name,
+          rateCall.member
+        ].join("|"),
+        groupFingerprint: [
+          handler.familyKey,
+          handler.packageKey,
+          handler.receiverType,
+          rateCall.member
+        ].join("|"),
+        handler,
+        rateCall,
+        established: familyExemption
+      });
+    }
+  }
+  return deduplicate(findings);
+}
+async function collectProgram(files) {
+  const functions = [];
+  for (const file of files) {
+    const tree = await parseGo(file.current);
+    try {
+      if (tree.rootNode.hasError) continue;
+      const packageNode = tree.rootNode.namedChildren.find((node) => node.type === "package_clause");
+      const packageName = packageNode === void 0 ? "" : sourceText(packageNode, file.current).replace(/^package\s+/, "").trim();
+      const packageKey = `${dirname3(file.path)}:${packageName}`;
+      const familyKey = dirname3(dirname3(file.path));
+      const imports = importAliases(tree.rootNode, file.current);
+      for (const node of [
+        ...descendants(tree.rootNode, "function_declaration"),
+        ...descendants(tree.rootNode, "method_declaration")
+      ]) {
+        const nameNode = node.childForFieldName("name");
+        const body2 = node.childForFieldName("body");
+        if (nameNode === null || body2 === null) continue;
+        const receiver = node.childForFieldName("receiver");
+        const receiverInfo = receiver === null ? {} : receiverBinding(receiver, file.current);
+        const params = parameterBindings(node.childForFieldName("parameters"), file.current);
+        const localContexts = localContextBindings(body2, params, file.current);
+        const calls = descendants(body2, "call_expression").flatMap((call) => {
+          if (!directlyOwned(call, body2)) return [];
+          const callable = call.childForFieldName("function");
+          const argumentsNode = call.childForFieldName("arguments");
+          if (callable === null || argumentsNode === null) return [];
+          let callReceiver = "";
+          let member = "";
+          if (callable.type === "selector_expression") {
+            const operand = callable.childForFieldName("operand");
+            const field = callable.childForFieldName("field");
+            if (operand === null || field === null) return [];
+            callReceiver = sourceText(operand, file.current);
+            member = sourceText(field, file.current);
+          } else if (callable.type === "identifier") {
+            member = sourceText(callable, file.current);
+          } else {
+            return [];
+          }
+          return [{
+            receiver: callReceiver,
+            member,
+            args: argumentsNode.namedChildren.map((arg) => sourceText(arg, file.current)),
+            start: call.startIndex,
+            end: call.endIndex,
+            line: call.startPosition.row + 1,
+            endLine: call.endPosition.row + 1,
+            text: sourceText(call, file.current),
+            executable: !staticallyDead(call, file.current)
+          }];
+        });
+        const guards = descendants(body2, "if_statement").flatMap((guard) => {
+          if (!directlyOwned(guard, body2)) return [];
+          const condition = guard.childForFieldName("condition");
+          const consequence = guard.childForFieldName("consequence");
+          if (condition === null || consequence === null) return [];
+          return [{
+            condition: compact(sourceText(condition, file.current)),
+            start: guard.startIndex,
+            end: guard.endIndex,
+            consequenceStart: consequence.startIndex,
+            consequenceEnd: consequence.endIndex,
+            returns: directReturn(consequence, file.current),
+            executable: !staticallyDead(guard, file.current),
+            topLevel: isTopLevelStatement(guard, body2)
+          }];
+        });
+        const returns = descendants(body2, "return_statement").flatMap((statement) => {
+          if (!directlyOwned(statement, body2)) return [];
+          return [{
+            expression: compact(sourceText(statement, file.current)).replace(/^return/, ""),
+            executable: !staticallyDead(statement, file.current),
+            topLevel: isTopLevelStatement(statement, body2)
+          }];
+        });
+        functions.push({
+          file,
+          packageKey,
+          familyKey,
+          name: sourceText(nameNode, file.current),
+          ...receiverInfo,
+          params,
+          start: node.startIndex,
+          end: node.endIndex,
+          line: node.startPosition.row + 1,
+          endLine: node.endPosition.row + 1,
+          text: sourceText(node, file.current),
+          calls,
+          guards,
+          returns,
+          localContexts,
+          imports
+        });
+      }
+    } finally {
+      tree.delete();
+    }
+  }
+  return {
+    functions,
+    selfHelpers: functions.flatMap((fn) => {
+      return isProvenSelfHelper(fn) ? [{ fn }] : [];
+    })
+  };
+}
+function isProvenSelfHelper(fn) {
+  if (!SELF_HELPER_NAME.test(fn.name) || fn.receiverType !== void 0) return false;
+  const contextAliases = new Set(
+    [...fn.imports].filter(([, path]) => path === "context").map(([alias]) => alias)
+  );
+  const contextParam = [...fn.params].find(([, type]) => [...contextAliases].some((alias) => compact(type) === `${alias}.Context`));
+  if (contextParam === void 0) return false;
+  const osAliases = new Set([...fn.imports].filter(([, path]) => path === "os").map(([alias]) => alias));
+  const contextPIDCalls = fn.calls.filter((call) => CONTEXT_PID_MEMBER.test(call.member) && call.args.some((arg) => compact(arg) === contextParam[0]) && [...fn.imports].some(([alias, path]) => compact(call.receiver) === alias && /(?:^|\/)(?:rpccontext|peertracker)$/.test(path)));
+  const processPIDCalls = fn.calls.filter((call) => call.member === "Getpid" && call.args.length === 0 && osAliases.has(compact(call.receiver)));
+  if (contextPIDCalls.length !== 1 || processPIDCalls.length !== 1) return false;
+  if (fn.returns.length !== 1) return false;
+  if (!bindingUnshadowed(fn, compact(contextPIDCalls[0].receiver), contextPIDCalls[0].start)) return false;
+  if (!bindingUnshadowed(fn, compact(processPIDCalls[0].receiver), processPIDCalls[0].start)) return false;
+  const contextCall = compact(contextPIDCalls[0].text);
+  const processCall = compact(processPIDCalls[0].text);
+  const comparesIdentity = fn.returns.some((result) => result.executable && result.topLevel && (result.expression === `${contextCall}==${processCall}` || result.expression === `${processCall}==${contextCall}`));
+  return comparesIdentity;
+}
+function mentionsHealth(source) {
+  return /(?:health(?:\s|-)?(?:check|probe)|liveness|readiness)/i.test(source);
+}
+function isRateLimitCall(call) {
+  if (!RATE_LIMIT_MEMBER.test(call.member)) return false;
+  const target = compact(`${call.receiver}.${call.member}`);
+  return /rate.?limit/i.test(target) || /(?:limiter|quota)\.(?:Allow|Wait)$/i.test(target);
+}
+function guardedBySelfExemption(call, helper, fn) {
+  if (helper.fn.packageKey !== fn.packageKey) return false;
+  if (fn.guards.some((guard) => guard.executable && bindingUnshadowed(fn, helper.fn.name, guard.start) && guard.consequenceStart <= call.start && guard.consequenceEnd >= call.end && contextBindingsAt(fn, guard.start).some((context) => isNegativeSelfCondition(guard.condition, helper.fn.name, context)))) return true;
+  return fn.guards.some((guard) => guard.executable && guard.topLevel && guard.end < call.start && guard.returns && bindingUnshadowed(fn, helper.fn.name, guard.start) && contextBindingsAt(fn, guard.start).some((context) => isPositiveSelfCondition(guard.condition, helper.fn.name, context)));
+}
+function guardedByAnyLocalSelfExemption(call, fn, helpers) {
+  return helpers.some((helper) => helper.fn.packageKey === fn.packageKey && guardedBySelfExemption(call, helper, fn));
+}
+function resolvedRateLimitHelperIsSafe(call, handler, program) {
+  const helper = program.functions.find((candidate) => candidate.packageKey === handler.packageKey && candidate.receiverType === handler.receiverType && candidate.name === call.member);
+  if (helper === void 0) return false;
+  const helperRateCall = helper.calls.find((candidate) => candidate.executable && isRateLimitCall(candidate));
+  if (helperRateCall === void 0) return false;
+  return program.selfHelpers.some((self) => self.fn.packageKey === helper.packageKey && guardedBySelfExemption(helperRateCall, self, helper));
+}
+function isContextBearingHandler(fn) {
+  if (contextParameterNames(fn).length > 0 || fn.localContexts.length > 0) return true;
+  return fn.calls.some((call) => call.member === "Context" && call.args.length === 0);
+}
+function contextParameterNames(fn) {
+  const contextAliases = new Set(
+    [...fn.imports].filter(([, path]) => path === "context").map(([alias]) => alias)
+  );
+  return [...fn.params].flatMap(([name2, type]) => [...contextAliases].some((alias) => compact(type) === `${alias}.Context`) ? [name2] : []);
+}
+function contextBindingsAt(fn, before) {
+  const parameters = contextParameterNames(fn).filter((name2) => bindingPreserved(fn, name2, fn.start, before));
+  const locals = fn.localContexts.flatMap((binding) => binding.originEnd < before && before < binding.scopeEnd && bindingPreserved(fn, binding.name, binding.originEnd, before) ? [binding.name] : []);
+  return [.../* @__PURE__ */ new Set([...parameters, ...locals])];
+}
+function changedAnchor(finding) {
+  const file = finding.handler.file;
+  if (file.status === "repository" || file.status === "added") {
+    return {
+      path: file.path,
+      line: finding.rateCall.line,
+      endLine: finding.rateCall.endLine,
+      snippet: finding.rateCall.text.trim().slice(0, 300)
+    };
+  }
+  for (let line = finding.rateCall.line; line <= finding.rateCall.endLine; line += 1) {
+    if (file.changedLines.has(line)) {
+      return { path: file.path, line, endLine: line, snippet: finding.rateCall.text.trim().slice(0, 300) };
+    }
+  }
+  return void 0;
+}
+function previousRevisions(files) {
+  return files.flatMap((file) => {
+    if (file.status === "added") return [];
+    const { previous, ...revision } = file;
+    if (file.status === "modified") {
+      if (previous === void 0) return [];
+      return [{ ...revision, current: previous, status: "repository", changedLines: /* @__PURE__ */ new Set() }];
+    }
+    return [{ ...revision, status: "repository", changedLines: /* @__PURE__ */ new Set() }];
+  });
+}
+function importAliases(root, source) {
+  const aliases = /* @__PURE__ */ new Map();
+  for (const spec of descendants(root, "import_spec")) {
+    const pathNode = spec.childForFieldName("path");
+    if (pathNode === null) continue;
+    const path = sourceText(pathNode, source).replace(/^"|"$/g, "");
+    const nameNode = spec.childForFieldName("name");
+    const alias = nameNode === null ? path.split("/").pop() ?? "" : sourceText(nameNode, source);
+    if (alias !== "_" && alias !== ".") aliases.set(alias, path);
+  }
+  return aliases;
+}
+function receiverBinding(node, source) {
+  const text = sourceText(node, source).replace(/^\(|\)$/g, "").trim();
+  const match = text.match(/^([A-Za-z_]\w*)\s+\*?([A-Za-z_]\w*)$/);
+  const receiverName = match?.[1];
+  const receiverType = match?.[2];
+  return receiverName === void 0 || receiverType === void 0 ? {} : { receiverName, receiverType };
+}
+function parameterBindings(node, source) {
+  const result = /* @__PURE__ */ new Map();
+  if (node === null) return result;
+  for (const declaration of descendants(node, "parameter_declaration")) {
+    const typeNode = declaration.childForFieldName("type");
+    if (typeNode === null) continue;
+    const type = sourceText(typeNode, source);
+    for (const nameNode of declaration.namedChildren.filter((child) => child.type === "identifier")) {
+      result.set(sourceText(nameNode, source), type);
+    }
+  }
+  return result;
+}
+function localContextBindings(body2, params, source) {
+  return descendants(body2, "short_var_declaration").flatMap((declaration) => {
+    const statements = declaration.parent;
+    if (statements?.type !== "statement_list" || statements.parent?.id !== body2.id) return [];
+    const match = compact(sourceText(declaration, source)).match(
+      /^([A-Za-z_]\w*):=([A-Za-z_]\w*)\.Context\(\)$/
+    );
+    if (match?.[1] === void 0 || match[2] === void 0 || !params.has(match[2])) return [];
+    return [{ name: match[1], originEnd: declaration.endIndex, scopeEnd: body2.endIndex }];
+  });
+}
+function staticallyDead(node, source) {
+  let current = node;
+  while (current?.parent !== null && current?.parent !== void 0) {
+    const parent = current.parent;
+    if (parent.type === "statement_list") {
+      const statement = parent.namedChildren.find((child) => contains(child, node));
+      if (statement !== void 0) {
+        const index = parent.namedChildren.indexOf(statement);
+        if (parent.namedChildren.slice(0, index).some((sibling) => sibling.type === "return_statement")) return true;
+      }
+    }
+    if (parent.type === "if_statement") {
+      const condition = parent.childForFieldName("condition");
+      const consequence = parent.childForFieldName("consequence");
+      const alternative = parent.childForFieldName("alternative");
+      const value = condition === null ? "" : compact(sourceText(condition, source));
+      if (value === "false" && consequence !== null && contains(consequence, node)) return true;
+      if (value === "true" && alternative !== null && contains(alternative, node)) return true;
+    }
+    current = parent;
+    if (parent.type === "function_declaration" || parent.type === "method_declaration") break;
+  }
+  return false;
+}
+function directlyOwned(node, body2) {
+  let current = node;
+  while (current !== null && current.id !== body2.id) {
+    if (current.type === "func_literal") return false;
+    current = current.parent;
+  }
+  return current !== null;
+}
+function directReturn(block, source) {
+  const statements = block.namedChildren.find((node) => node.type === "statement_list");
+  return statements?.namedChildren.some((node) => node.type === "return_statement" && /^return(?:nil)?$/.test(compact(sourceText(node, source)))) ?? false;
+}
+function isTopLevelStatement(node, body2) {
+  const statements = node.parent;
+  return statements?.type === "statement_list" && statements.parent?.id === body2.id;
+}
+function isNegativeSelfCondition(text, helper, context) {
+  return text === `!${helper}(${context})` || text === `${helper}(${context})==false` || text === `false==${helper}(${context})`;
+}
+function isPositiveSelfCondition(text, helper, context) {
+  return text === `${helper}(${context})` || text === `${helper}(${context})==true` || text === `true==${helper}(${context})`;
+}
+function receiverStartsWith(receiver, name2) {
+  if (name2 === void 0) return false;
+  const value = compact(receiver);
+  return value === name2 || value.startsWith(`${name2}.`);
+}
+function bindingUnshadowed(fn, name2, before) {
+  if (name2 === void 0) return false;
+  if (fn.params.has(name2)) return false;
+  const prefix = fn.file.current.slice(fn.start, before);
+  return !bindingWritePattern(name2).test(prefix);
+}
+function bindingPreserved(fn, name2, after, before) {
+  return !bindingWritePattern(name2).test(fn.file.current.slice(after, before));
+}
+function bindingWritePattern(name2) {
+  const escaped = escapeRegExp(name2);
+  return new RegExp(`(?:^|[;{}\\n])\\s*(?:var\\s+${escaped}\\b|${escaped}\\s*(?::=|=(?!=)))`);
+}
+function contains(outer, inner) {
+  return outer.startIndex <= inner.startIndex && outer.endIndex >= inner.endIndex;
+}
+function compact(value) {
+  return value.replace(/\s+/g, "").replace(/^\((.*)\)$/s, "$1");
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function deduplicate(findings) {
+  const seen = /* @__PURE__ */ new Set();
+  return findings.filter((finding) => {
+    if (seen.has(finding.fingerprint)) return false;
+    seen.add(finding.fingerprint);
+    return true;
+  });
+}
+
 // src/analyze.ts
 async function analyzeDiscovery(discovery) {
   const signals = [];
@@ -21605,6 +21995,7 @@ async function analyzeDiscovery(discovery) {
       parseErrors.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
     }
   }
+  signals.push(...await selfRateLimitDenialSignals(discovery.files));
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
@@ -21914,15 +22305,15 @@ function hasAncestor(node, type, boundary) {
 }
 function expressionUsesURL(node, url, source) {
   const text = sourceText(node, source).replace(/\s/g, "");
-  const escaped = escapeRegExp(url);
+  const escaped = escapeRegExp2(url);
   return new RegExp(`^(?:${escaped}|${escaped}\\.String\\(\\)|${escaped}\\.RequestURI\\(\\))$`).test(text);
 }
 function referencesIdentifier(text, identifier) {
-  return new RegExp(`\\b${escapeRegExp(identifier)}\\b`).test(text);
+  return new RegExp(`\\b${escapeRegExp2(identifier)}\\b`).test(text);
 }
 function referencesRequestURL(text, flow) {
-  if (flow.request !== void 0 && new RegExp(`\\b${escapeRegExp(flow.request)}\\.URL\\b`).test(text)) return true;
-  return new RegExp(`\\b${escapeRegExp(flow.url)}(?:\\.String\\(\\)|\\b)`).test(text);
+  if (flow.request !== void 0 && new RegExp(`\\b${escapeRegExp2(flow.request)}\\.URL\\b`).test(text)) return true;
+  return new RegExp(`\\b${escapeRegExp2(flow.url)}(?:\\.String\\(\\)|\\b)`).test(text);
 }
 function exposureDescription(sink, error, source) {
   const text = sourceText(sink, source);
@@ -22273,7 +22664,7 @@ function nilAttestationSubjectSignals(file, root) {
       if (element === void 0 || collection === void 0) continue;
       for (const condition of descendants(loop, "if_statement")) {
         const conditionText = sourceText(condition, file.current);
-        const escapedElement = escapeRegExp(element);
+        const escapedElement = escapeRegExp2(element);
         const nilGuard = new RegExp(
           `^if\\s+(?:${escapedElement}\\s*==\\s*nil|nil\\s*==\\s*${escapedElement})\\s*\\{`
         );
@@ -22293,7 +22684,7 @@ function nilAttestationSubjectSignals(file, root) {
   }
   return signals;
 }
-function escapeRegExp(value) {
+function escapeRegExp2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function changed(file, line, endLine = line) {
@@ -22410,6 +22801,7 @@ Authority (only report issues in this scope):
 - secret manager / cloud CLI output that may leak credentials
 - credential storage modes and local secret material
 - authentication header construction and accidental secret retention
+- security controls such as rate limits that can deny proven service-self health or maintenance calls when the repository has an established self-caller exemption
 
 Do NOT review generic Go style, CLI UX, concurrency, databases, or infrastructure YAML unless it is a concrete credential or transport defect.
 
@@ -22490,6 +22882,7 @@ var GO_SECURITY_MODEL_SCHEMA = {
             type: "array",
             minItems: 1,
             maxItems: 8,
+            uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 96 }
           }
         }
@@ -22591,25 +22984,37 @@ function buildModelReviewRequestFromDiscovery(change, analysis, files) {
   };
 }
 async function applyModelSecurityReview(ctx, output, evidenceById, staticSeverities = [], staticPrimaryConcern) {
-  const modelObservationSeverities = output.observations.map((item) => item.severity);
+  const groundedObservations = output.observations.slice(0, MAX_MODEL_OBSERVATIONS).flatMap((observation) => {
+    if (observation.evidenceIds.length === 0) return [];
+    const uniqueIds = new Set(observation.evidenceIds);
+    if (uniqueIds.size !== observation.evidenceIds.length) return [];
+    const evidence = observation.evidenceIds.flatMap((id) => {
+      const item = evidenceById.get(id);
+      return item === void 0 ? [] : [item];
+    });
+    return evidence.length === observation.evidenceIds.length ? [{ observation, evidence }] : [];
+  });
+  const modelObservationSeverities = groundedObservations.map(({ observation }) => observation.severity);
   const risk = maxSeverity([
-    output.assessment.risk,
     ...staticSeverities,
     ...modelObservationSeverities
   ]);
   ctx.review.assessment({
     risk,
-    summary: output.assessment.summary
+    summary: groundedObservations.length > 0 ? output.assessment.summary : staticPrimaryConcern === void 0 ? "No evidence-backed model security concern was found." : `Deterministic analysis found ${staticPrimaryConcern}.`
   });
-  const rankedObservations = output.observations.slice().sort(
-    (left, right) => severityRank(right.severity) - severityRank(left.severity) || left.id.localeCompare(right.id)
+  const rankedObservations = groundedObservations.slice().sort(
+    (left, right) => severityRank(right.observation.severity) - severityRank(left.observation.severity) || left.observation.id.localeCompare(right.observation.id)
   );
   const blocking = staticSeverities.some((severity) => severityRank(severity) >= severityRank("medium")) || modelObservationSeverities.some((severity) => severityRank(severity) >= severityRank("medium"));
-  const ship = output.ship && !blocking;
-  const topModel = rankedObservations[0];
+  const ship = !blocking && (groundedObservations.length === 0 || output.ship);
+  const topModel = rankedObservations[0]?.observation;
   const staticMax = maxSeverity(staticSeverities);
   const modelMax = maxSeverity(modelObservationSeverities);
-  const modelCandidates = [topModel?.title, output.primaryConcern];
+  const modelCandidates = [
+    topModel?.title,
+    ...groundedObservations.length === 0 ? [] : [output.primaryConcern]
+  ];
   const staticCandidates = [staticPrimaryConcern];
   const ordered = severityRank(staticMax) > severityRank(modelMax) ? [...staticCandidates, ...modelCandidates] : [...modelCandidates, ...staticCandidates];
   const concern = await resolveOpinionConcern(ctx, ordered);
@@ -22620,8 +23025,8 @@ async function applyModelSecurityReview(ctx, output, evidenceById, staticSeverit
       change: ctx.change
     })
   );
-  for (const observation of output.observations.slice(0, MAX_MODEL_OBSERVATIONS)) {
-    const evidence = observation.evidenceIds.map((id) => evidenceById.get(id)).filter((item) => item !== void 0).slice(0, 8).map((item) => ({
+  for (const { observation, evidence: preparedEvidence } of groundedObservations) {
+    const evidence = preparedEvidence.map((item) => ({
       location: {
         file: item.path,
         ...item.line === void 0 ? {} : { line: item.line }
@@ -22632,7 +23037,7 @@ async function applyModelSecurityReview(ctx, output, evidenceById, staticSeverit
     ctx.review.observe({
       key: `go-security.model.${observation.id}`,
       summary: `[${observation.severity}/${observation.confidence}] ${observation.title}: ${observation.summary}`,
-      ...evidence.length === 0 ? {} : { evidence },
+      evidence,
       metadata: {
         source: "model",
         category: observation.category,
@@ -22871,7 +23276,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.22",
+    version: "0.0.24",
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
   app.rule("go-security.review", async (ctx) => {
