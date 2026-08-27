@@ -14,12 +14,14 @@ test("the published runtime executes without node_modules", async () => {
   const artifact = await mkdtemp(join(tmpdir(), "go-security-artifact-"));
   const repository = await mkdtemp(join(tmpdir(), "go-security-target-"));
   const entrypoint = join(artifact, "dist", "index.js");
+  const noticesPath = join(artifact, "THIRD_PARTY_NOTICES.md");
   const input = join(artifact, "input.json");
   const output = join(artifact, "output.json");
 
   await mkdir(dirname(entrypoint), { recursive: true });
   await mkdir(join(artifact, "schemas"), { recursive: true });
   await copyFile(join(projectRoot, "dist", "index.js"), entrypoint);
+  await copyFile(join(projectRoot, "THIRD_PARTY_NOTICES.md"), noticesPath);
   await copyFile(join(projectRoot, "dist", "web-tree-sitter.wasm"), join(artifact, "dist", "web-tree-sitter.wasm"));
   await copyFile(join(projectRoot, "dist", "tree-sitter-go.wasm"), join(artifact, "dist", "tree-sitter-go.wasm"));
   await copyFile(
@@ -32,6 +34,22 @@ test("the published runtime executes without node_modules", async () => {
 
   const bundle = await readFile(entrypoint, "utf8");
   assert.doesNotMatch(bundle, /from\s+["'](?:@adversarylabs\/sdk|web-tree-sitter)["']/);
+  assert.doesNotMatch(bundle, /\/Users\/|\/private\/tmp\/|[A-Za-z]:\\\\Users\\\\/);
+  const notices = await readFile(noticesPath, "utf8");
+  assert.deepEqual([...notices.matchAll(/^## (.+?) \(/gm)].map((match) => match[1]), [
+    "@adversarylabs/sdk",
+    "ajv",
+    "fast-deep-equal",
+    "fast-uri",
+    "json-schema-traverse",
+    "tree-sitter-go",
+    "web-tree-sitter",
+    "yaml",
+  ]);
+  for (const section of notices.split(/^## /m).slice(1)) {
+    assert.ok(section.length > 300, `expected a full license text, got ${section.length} bytes`);
+    assert.match(section, /copyright|permission|redistribution|license/i);
+  }
 
   await execute(process.execPath, [entrypoint], {
     cwd: artifact,
@@ -46,5 +64,6 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/security");
+  assert.equal(envelope.result.adversary.version, "0.0.24");
   assert.deepEqual(envelope.result.findings, []);
 });

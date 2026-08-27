@@ -25,6 +25,7 @@ Authority (only report issues in this scope):
 - secret manager / cloud CLI output that may leak credentials
 - credential storage modes and local secret material
 - authentication header construction and accidental secret retention
+- security controls such as rate limits that can deny proven service-self health or maintenance calls when the repository has an established self-caller exemption
 
 Do NOT review generic Go style, CLI UX, concurrency, databases, or infrastructure YAML unless it is a concrete credential or transport defect.
 
@@ -106,6 +107,7 @@ export const GO_SECURITY_MODEL_SCHEMA: Record<string, unknown> = {
             type: "array",
             minItems: 1,
             maxItems: 8,
+            uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 96 },
           },
         },
@@ -300,31 +302,52 @@ export async function applyModelSecurityReview(
   staticSeverities: StaticSeverity[] = [],
   staticPrimaryConcern?: string,
 ): Promise<void> {
-  const modelObservationSeverities = output.observations.map((item) => item.severity);
+  const groundedObservations = output.observations
+    .slice(0, MAX_MODEL_OBSERVATIONS)
+    .flatMap((observation) => {
+      if (observation.evidenceIds.length === 0) return [];
+      const uniqueIds = new Set(observation.evidenceIds);
+      if (uniqueIds.size !== observation.evidenceIds.length) return [];
+      const evidence = observation.evidenceIds.flatMap((id) => {
+        const item = evidenceById.get(id);
+        return item === undefined ? [] : [item];
+      });
+      return evidence.length === observation.evidenceIds.length
+        ? [{ observation, evidence }]
+        : [];
+    });
+  const modelObservationSeverities = groundedObservations.map(({ observation }) => observation.severity);
   const risk = maxSeverity([
-    output.assessment.risk,
     ...staticSeverities,
     ...modelObservationSeverities,
   ]);
 
   ctx.review.assessment({
     risk,
-    summary: output.assessment.summary,
+    summary: groundedObservations.length > 0
+      ? output.assessment.summary
+      : staticPrimaryConcern === undefined
+        ? "No evidence-backed model security concern was found."
+        : `Deterministic analysis found ${staticPrimaryConcern}.`,
   });
 
-  const rankedObservations = output.observations.slice().sort(
+  const rankedObservations = groundedObservations.slice().sort(
     (left, right) =>
-      severityRank(right.severity) - severityRank(left.severity) || left.id.localeCompare(right.id),
+      severityRank(right.observation.severity) - severityRank(left.observation.severity) ||
+      left.observation.id.localeCompare(right.observation.id),
   );
   const blocking =
     staticSeverities.some((severity) => severityRank(severity) >= severityRank("medium")) ||
     modelObservationSeverities.some((severity) => severityRank(severity) >= severityRank("medium"));
-  const ship = output.ship && !blocking;
+  const ship = !blocking && (groundedObservations.length === 0 || output.ship);
 
-  const topModel = rankedObservations[0];
+  const topModel = rankedObservations[0]?.observation;
   const staticMax = maxSeverity(staticSeverities);
   const modelMax = maxSeverity(modelObservationSeverities);
-  const modelCandidates = [topModel?.title, output.primaryConcern];
+  const modelCandidates = [
+    topModel?.title,
+    ...(groundedObservations.length === 0 ? [] : [output.primaryConcern]),
+  ];
   const staticCandidates = [staticPrimaryConcern];
   const ordered =
     severityRank(staticMax) > severityRank(modelMax)
@@ -340,12 +363,8 @@ export async function applyModelSecurityReview(
     }),
   );
 
-  for (const observation of output.observations.slice(0, MAX_MODEL_OBSERVATIONS)) {
-    const evidence = observation.evidenceIds
-      .map((id) => evidenceById.get(id))
-      .filter((item): item is PreparedEvidenceItem => item !== undefined)
-      .slice(0, 8)
-      .map((item) => ({
+  for (const { observation, evidence: preparedEvidence } of groundedObservations) {
+    const evidence = preparedEvidence.map((item) => ({
         location: {
           file: item.path,
           ...(item.line === undefined ? {} : { line: item.line }),
@@ -357,7 +376,7 @@ export async function applyModelSecurityReview(
     ctx.review.observe({
       key: `go-security.model.${observation.id}`,
       summary: `[${observation.severity}/${observation.confidence}] ${observation.title}: ${observation.summary}`,
-      ...(evidence.length === 0 ? {} : { evidence }),
+      evidence,
       metadata: {
         source: "model",
         category: observation.category,

@@ -11,7 +11,7 @@ available evidence does not justify a finding.
 
 ## Scope
 
-It evaluates changed Go code for command, path, archive, cryptography, TLS, credential, SQL, token, cookie, signature, and debug-surface vulnerabilities.
+It evaluates changed Go code for command, path, archive, cryptography, TLS, credential, SQL, token, cookie, signature, debug-surface, and security-control self-denial vulnerabilities.
 
 The complete detector or review inventory is maintained in
 [CHECKS.md](CHECKS.md).
