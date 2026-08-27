@@ -11,7 +11,7 @@ import { reviewDomain } from "./review.js";
 export function createApp(): Adversary {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.24",
+    version: "0.0.25",
     review: { maximumFindings: 5, minimumConfidence: "medium" },
   });
 
@@ -34,7 +34,7 @@ export function createApp(): Adversary {
     await reviewDomain(
       ctx,
       analysis,
-      discovery.files.map((file) => ({
+      discovery.files.filter((file) => file.status !== "context").map((file) => ({
         path: file.path,
         current: file.current,
         status: file.status,

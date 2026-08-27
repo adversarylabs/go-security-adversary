@@ -64,6 +64,90 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/security");
-  assert.equal(envelope.result.adversary.version, "0.0.24");
+  assert.equal(envelope.result.adversary.version, "0.0.25");
   assert.deepEqual(envelope.result.findings, []);
+
+  const workloadPath = "pkg/agent/endpoints/workload/handler.go";
+  const sdsPath = "pkg/agent/endpoints/sdsv3/handler.go";
+  await mkdir(dirname(join(repository, workloadPath)), { recursive: true });
+  await mkdir(dirname(join(repository, sdsPath)), { recursive: true });
+  await writeFile(join(repository, workloadPath), establishedWorkloadExemption);
+  await writeFile(join(repository, sdsPath), sdsBeforeRateLimit);
+  await execute("git", ["init", "--quiet"], { cwd: repository });
+  await execute("git", ["config", "user.email", "tests@example.com"], { cwd: repository });
+  await execute("git", ["config", "user.name", "Tests"], { cwd: repository });
+  await execute("git", ["add", "."], { cwd: repository });
+  await execute("git", ["commit", "--quiet", "-m", "fixture"], { cwd: repository });
+  await writeFile(join(repository, sdsPath), vulnerableSDS);
+  await writeFile(input, `${JSON.stringify({
+    source: { path: repository },
+    change: {
+      type: "diff",
+      base_ref: "HEAD",
+      head_ref: "WORKTREE",
+      scan_mode: "changed",
+      changed_files: [sdsPath],
+    },
+  })}\n`);
+
+  await execute(process.execPath, [entrypoint], {
+    cwd: artifact,
+    env: {
+      ...process.env,
+      ADVERSARY_INPUT: input,
+      ADVERSARY_OUTPUT: output,
+      ADVERSARY_REPO: repository,
+    },
+  });
+
+  const diffEnvelope = JSON.parse(await readFile(output, "utf8"));
+  const selfDenial = diffEnvelope.result.findings.filter(
+    (finding: { ruleId?: string }) => finding.ruleId === "go-security.rate-limit.self-denial",
+  );
+  assert.equal(selfDenial.length, 1);
+  assert.equal(selfDenial[0].evidence[0].file, sdsPath);
 });
+
+const establishedWorkloadExemption = `package workload
+import (
+  "context"
+  "os"
+  "example.test/spire/pkg/agent/api/rpccontext"
+)
+type Limiter interface { RateLimit(string, []string) error }
+type Config struct { RateLimiter Limiter }
+type Handler struct { c Config }
+func isAgent(ctx context.Context) bool {
+  return rpccontext.CallerPID(ctx) == os.Getpid()
+}
+func (h *Handler) rateLimit(method string, selectors []string) error {
+  return h.c.RateLimiter.RateLimit(method, selectors)
+}
+func (h *Handler) FetchX509SVID(ctx context.Context, selectors []string) error {
+  if !isAgent(ctx) {
+    if err := h.rateLimit("FetchX509SVID", selectors); err != nil { return err }
+  }
+  return nil
+}
+// The agent health check exercises this API, so agent-self calls are exempt.
+`;
+
+const vulnerableSDS = `package sdsv3
+import "context"
+type Limiter interface { RateLimit(string, []string) error }
+type Config struct { RateLimiter Limiter }
+type Handler struct { c Config }
+func (h *Handler) rateLimit(method string, selectors []string) error {
+  if h.c.RateLimiter == nil { return nil }
+  return h.c.RateLimiter.RateLimit(method, selectors)
+}
+func (h *Handler) StreamSecrets(ctx context.Context, selectors []string) error {
+  if err := h.rateLimit("StreamSecrets", selectors); err != nil { return err }
+  return nil
+}
+`;
+
+const sdsBeforeRateLimit = vulnerableSDS.replace(
+  '  if err := h.rateLimit("StreamSecrets", selectors); err != nil { return err }\n',
+  "",
+);

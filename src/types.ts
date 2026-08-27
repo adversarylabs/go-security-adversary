@@ -3,7 +3,7 @@ export interface SourceRevision {
   current: string;
   previous?: string;
   changedLines: Set<number>;
-  status: "added" | "modified" | "repository";
+  status: "added" | "modified" | "repository" | "context";
 }
 
 export interface Discovery {
