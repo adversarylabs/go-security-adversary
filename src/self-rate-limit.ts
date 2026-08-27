@@ -402,6 +402,9 @@ function previousRevisions(files: SourceRevision[]): SourceRevision[] {
   return files.flatMap((file): SourceRevision[] => {
     if (file.status === "added") return [];
     const { previous, ...revision } = file;
+    if (file.status === "context") {
+      return [{ ...revision, status: "context", changedLines: new Set() }];
+    }
     if (file.status === "modified") {
       if (previous === undefined) return [];
       return [{ ...revision, current: previous, status: "repository", changedLines: new Set() }];

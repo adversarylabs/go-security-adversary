@@ -104,6 +104,64 @@ test("discoverSources all-files walks target via SDK", async () => {
   assert.deepEqual(paths, ["main.go", "pkg/weak/tls.go"]);
 });
 
+test("diff discovery hydrates only unchanged direct sibling packages in the changed service family", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "go-sec-discover-family-"));
+  const workloadPath = "pkg/agent/endpoints/workload/handler.go";
+  const sdsPath = "pkg/agent/endpoints/sdsv3/handler.go";
+  const legacyPath = "pkg/agent/endpoints/legacy/cookie.go";
+  const malformedContextPath = "pkg/agent/endpoints/legacy/broken.go";
+  const unrelatedPath = "pkg/server/admin/handler.go";
+  for (const path of [workloadPath, sdsPath, legacyPath, malformedContextPath, unrelatedPath]) {
+    await mkdir(join(repo, ...path.split("/").slice(0, -1)), { recursive: true });
+  }
+  await execute("git", ["init", "--quiet"], { cwd: repo });
+  await execute("git", ["config", "user.email", "tests@example.com"], { cwd: repo });
+  await execute("git", ["config", "user.name", "Tests"], { cwd: repo });
+  await writeFile(join(repo, workloadPath), establishedWorkloadExemption);
+  await writeFile(join(repo, sdsPath), sdsBeforeRateLimit);
+  await writeFile(join(repo, legacyPath), legacyAuthenticationCookie);
+  await writeFile(join(repo, malformedContextPath), "package legacy\nfunc broken(\n");
+  await writeFile(join(repo, unrelatedPath), establishedWorkloadExemption.replace("package workload", "package admin"));
+  await execute("git", ["add", "."], { cwd: repo });
+  await execute("git", ["commit", "--quiet", "-m", "fixture"], { cwd: repo });
+  await writeFile(join(repo, sdsPath), vulnerableSDS);
+
+  const change: RuleContext["change"] = {
+    type: "diff",
+    baseRef: "HEAD",
+    headRef: "WORKTREE",
+    scanMode: "changed",
+    changedFiles: [sdsPath],
+    worktree: true,
+  };
+  const discovery = await discoverSources(fakeCtx(repo, change));
+
+  assert.deepEqual(
+    discovery.files.map((file) => file.path),
+    [malformedContextPath, legacyPath, sdsPath, workloadPath],
+  );
+  assert.equal(discovery.files.find((file) => file.path === workloadPath)?.status, "context");
+  assert.equal(discovery.files.find((file) => file.path === legacyPath)?.status, "context");
+  assert.equal(discovery.files.find((file) => file.path === sdsPath)?.status, "modified");
+  assert.equal(discovery.files.some((file) => file.path === unrelatedPath), false);
+
+  const output = await createApp().run({
+    input: {
+      source: { path: repo },
+      change: {
+        type: "diff",
+        base_ref: "HEAD",
+        head_ref: "WORKTREE",
+        scan_mode: "changed",
+        changed_files: [sdsPath],
+      },
+    },
+  });
+  assert.equal(output.findings.some((item) => item.ruleId === "go-security.rate-limit.self-denial"), true);
+  assert.equal(output.findings.some((item) => item.ruleId === "go-security.cookie.auth-httponly"), false);
+  assert.equal(output.observations.some((item) => /parse error/i.test(item.summary)), false);
+});
+
 test("an unrelated edit does not surface a legacy authentication cookie finding", async () => {
   const repo = await repositoryWithLegacyCookie();
   const path = "handler.go";
@@ -192,3 +250,54 @@ func diagnostic() {
 }
 `;
 }
+
+const establishedWorkloadExemption = `package workload
+import (
+  "context"
+  "os"
+  "example.test/spire/pkg/agent/api/rpccontext"
+)
+type Limiter interface { RateLimit(string, []string) error }
+type Config struct { RateLimiter Limiter }
+type Handler struct { c Config }
+func isAgent(ctx context.Context) bool {
+  return rpccontext.CallerPID(ctx) == os.Getpid()
+}
+func (h *Handler) rateLimit(method string, selectors []string) error {
+  return h.c.RateLimiter.RateLimit(method, selectors)
+}
+func (h *Handler) FetchX509SVID(ctx context.Context, selectors []string) error {
+  if !isAgent(ctx) {
+    if err := h.rateLimit("FetchX509SVID", selectors); err != nil { return err }
+  }
+  return nil
+}
+// The agent health check exercises this API, so agent-self calls are exempt.
+`;
+
+const vulnerableSDS = `package sdsv3
+import "context"
+type Limiter interface { RateLimit(string, []string) error }
+type Config struct { RateLimiter Limiter }
+type Handler struct { c Config }
+func (h *Handler) rateLimit(method string, selectors []string) error {
+  if h.c.RateLimiter == nil { return nil }
+  return h.c.RateLimiter.RateLimit(method, selectors)
+}
+func (h *Handler) StreamSecrets(ctx context.Context, selectors []string) error {
+  if err := h.rateLimit("StreamSecrets", selectors); err != nil { return err }
+  return nil
+}
+`;
+
+const sdsBeforeRateLimit = vulnerableSDS.replace(
+  '  if err := h.rateLimit("StreamSecrets", selectors); err != nil { return err }\n',
+  "",
+);
+
+const legacyAuthenticationCookie = `package legacy
+import "net/http"
+func login(w http.ResponseWriter, token string) {
+  http.SetCookie(w, &http.Cookie{Name: "session", Value: token})
+}
+`;

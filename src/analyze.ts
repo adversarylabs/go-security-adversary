@@ -10,6 +10,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
   const parseErrors: Analysis["parseErrors"] = [];
 
   for (const file of discovery.files) {
+    if (file.status === "context") continue;
     try {
       if (file.path.endsWith(".go")) {
         const tree = await parseGo(file.current);
@@ -58,7 +59,7 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
   return {
     mode: discovery.mode,
     ...(discovery.base === undefined ? {} : { base: discovery.base }),
-    filesScanned: discovery.files.length,
+    filesScanned: discovery.files.filter((file) => file.status !== "context").length,
     signals: signals.sort(byLocation),
     positives: positives.sort(byLocation),
     parseErrors: parseErrors.sort((left, right) => left.path.localeCompare(right.path)),
@@ -948,6 +949,7 @@ function escapeRegExp(value: string): string {
 }
 
 function changed(file: SourceRevision, line: number, endLine = line): boolean {
+  if (file.status === "context") return false;
   if (file.status === "repository" || file.status === "added") return true;
   for (let candidate = line; candidate <= endLine; candidate += 1) {
     if (file.changedLines.has(candidate)) return true;
