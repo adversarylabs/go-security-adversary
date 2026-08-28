@@ -1,4 +1,4 @@
-name: go/security
+name: adversarylabs/go/security
 version: 0.0.25
 description: Reviews Go trust boundaries, authentication, cryptography, transport security, and secret handling.
 
