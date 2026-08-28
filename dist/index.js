@@ -23373,7 +23373,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.25",
+    version: "0.0.26",
     review: { maximumFindings: 5, minimumConfidence: "medium" }
   });
   app.rule("go-security.review", async (ctx) => {
