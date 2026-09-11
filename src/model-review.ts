@@ -91,6 +91,7 @@ export const GO_SECURITY_MODEL_SCHEMA: Record<string, unknown> = {
               "credential-files",
               "secret-output",
               "auth-boundary",
+              "telemetry-privacy",
               "completeness",
             ],
           },

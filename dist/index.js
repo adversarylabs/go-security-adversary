@@ -22963,6 +22963,7 @@ var GO_SECURITY_MODEL_SCHEMA = {
               "credential-files",
               "secret-output",
               "auth-boundary",
+              "telemetry-privacy",
               "completeness"
             ]
           },

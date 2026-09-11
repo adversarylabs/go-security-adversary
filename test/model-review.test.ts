@@ -271,3 +271,21 @@ test("miss-derived policy requires contract evidence and clean counterexamples",
   assert.ok(GO_SECURITY_MODEL_PROMPT.includes('prepared caller/resolver evidence'));
   assert.ok(GO_SECURITY_MODEL_PROMPT.includes('Stay quiet for explicitly public identifiers'));
 });
+
+test("grounded telemetry privacy observations survive model synthesis", async () => {
+  const root = await writeFixture("telemetry", {"telemetry.go": `package sample
+func sendLocal(ref string) { sendTelemetry(classify(ref)) }
+func classify(ref string) string { return ref }
+`});
+  const schema = GO_SECURITY_MODEL_SCHEMA as any;
+  assert.ok(schema.properties.observations.items.properties.category.enum.includes("telemetry-privacy"));
+  const model = capturingModel({
+    assessment: {risk: "high", summary: "Local identifiers escape the telemetry boundary."}, ship: false,
+    primaryConcern: "local identifiers in outbound telemetry",
+    observations: [{id: "telemetry-path", title: "Local path reaches telemetry", category: "telemetry-privacy", severity: "high", confidence: "high",
+      summary: "The local reference is sent unchanged.", whyItMatters: "Private resource names cross the outbound boundary.", recommendation: "Carry the local classification to the telemetry sink.", evidenceIds: ["file:telemetry.go"]}],
+  });
+  const result = await runWithModel(root, model);
+  assert.ok(result.observations.some(item => item.metadata?.category === "telemetry-privacy"));
+  assert.equal(result.opinion?.ship, false);
+});
