@@ -265,3 +265,9 @@ func client() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
   assert.ok(result.findings.some((f) => (f.ruleId ?? "") === "go-security.tls-verification"));
   assert.equal(result.opinion?.ship, false);
 });
+
+test("miss-derived policy requires contract evidence and clean counterexamples", () => {
+  assert.ok(GO_SECURITY_MODEL_PROMPT.includes('Trace telemetry identifier provenance'));
+  assert.ok(GO_SECURITY_MODEL_PROMPT.includes('prepared caller/resolver evidence'));
+  assert.ok(GO_SECURITY_MODEL_PROMPT.includes('Stay quiet for explicitly public identifiers'));
+});

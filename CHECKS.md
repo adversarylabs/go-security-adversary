@@ -39,3 +39,7 @@ closure, receiver-shadowed, unchanged legacy, test/generated, or comment-only. T
 grounding is [spiffe/spire#6724](https://github.com/spiffe/spire/pull/6724#discussion_r3335483342):
 commit `97236295` passes context into the SDS limiter, exempts agent-self calls, and tests both
 self bypass and non-self enforcement.
+
+## Miss-derived review boundary
+
+- Trace telemetry identifier provenance: a local path and a public registry identifier can share the same syntax. Prefix checks for '.', '/', '~', or backslashes do not exclude bare relative paths such as 'team/private-tool'. Report only when prepared caller/resolver evidence proves local paths are accepted, a syntax-only classifier retains their components, and those components reach outbound telemetry contrary to the stated redaction contract. Cite the accepted input, classifier, and telemetry sink together; do not infer a leak from a sanitizer name or a slash alone. Prefer carrying the resolver's local/catalog classification or emitting only verified public identifiers. Stay quiet for explicitly public identifiers, a dominating local-resource bucket, an allowlist established from public catalog provenance, or an intentionally local-only log. Do not require paths to be disclosed to verify this concern.
