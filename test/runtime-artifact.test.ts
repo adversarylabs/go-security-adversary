@@ -64,7 +64,7 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/security");
-  assert.equal(envelope.result.adversary.version, "0.0.26");
+  assert.equal(envelope.result.adversary.version, JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8")).version);
   assert.deepEqual(envelope.result.findings, []);
 
   const workloadPath = "pkg/agent/endpoints/workload/handler.go";
