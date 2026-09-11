@@ -273,17 +273,31 @@ test("miss-derived policy requires contract evidence and clean counterexamples",
 });
 
 test("grounded telemetry privacy observations survive model synthesis", async () => {
-  const root = await writeFixture("telemetry", {"telemetry.go": `package sample
-func sendLocal(ref string) { sendTelemetry(classify(ref)) }
-func classify(ref string) string { return ref }
-`});
+  const root = await writeFixture("telemetry", {
+    "caller.go": `package sample
+// resolveLocal accepts bare relative filesystem paths.
+func resolveLocal(path string) { reportLocal(path) }
+`,
+    "classifier.go": `package sample
+import "strings"
+func classify(ref string) string {
+ if strings.HasPrefix(ref, ".") || strings.HasPrefix(ref, "/") { return "local" }
+ if strings.Count(ref, "/") == 1 { return ref }
+ return "other"
+}
+`,
+    "telemetry.go": `package sample
+// Privacy contract: local resource names must never leave the process.
+func reportLocal(path string) { sendTelemetry(classify(path)) }
+`,
+  });
   const schema = GO_SECURITY_MODEL_SCHEMA as any;
   assert.ok(schema.properties.observations.items.properties.category.enum.includes("telemetry-privacy"));
   const model = capturingModel({
     assessment: {risk: "high", summary: "Local identifiers escape the telemetry boundary."}, ship: false,
     primaryConcern: "local identifiers in outbound telemetry",
     observations: [{id: "telemetry-path", title: "Local path reaches telemetry", category: "telemetry-privacy", severity: "high", confidence: "high",
-      summary: "The local reference is sent unchanged.", whyItMatters: "Private resource names cross the outbound boundary.", recommendation: "Carry the local classification to the telemetry sink.", evidenceIds: ["file:telemetry.go"]}],
+      summary: "The local reference is sent unchanged.", whyItMatters: "Private resource names cross the outbound boundary.", recommendation: "Carry the local classification to the telemetry sink.", evidenceIds: ["file:caller.go", "file:classifier.go", "file:telemetry.go"]}],
   });
   const result = await runWithModel(root, model);
   assert.ok(result.observations.some(item => item.metadata?.category === "telemetry-privacy"));
