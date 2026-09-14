@@ -20,6 +20,8 @@ function fakeCtx(
     repoPath,
     change,
     repoIndex: null,
+    repoGraph: null,
+    outcomeContext: null,
     summary: {},
     cache: new Map(),
     relpath: (path) => path,
@@ -70,6 +72,7 @@ func C() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
       headRef: "WORKTREE",
       scanMode: "changed",
       changedFiles: ["pkg/weak/tls.go"],
+      changedRanges: [],
       worktree: true,
     }),
   );
@@ -95,6 +98,7 @@ test("discoverSources all-files walks target via SDK", async () => {
       headRef: "HEAD",
       scanMode: "all",
       changedFiles: [],
+      changedRanges: [],
       worktree: false,
     }),
   );
@@ -132,6 +136,7 @@ test("diff discovery hydrates only unchanged direct sibling packages in the chan
     headRef: "WORKTREE",
     scanMode: "changed",
     changedFiles: [sdsPath],
+    changedRanges: [],
     worktree: true,
   };
   const discovery = await discoverSources(fakeCtx(repo, change));
@@ -172,6 +177,7 @@ test("an unrelated edit does not surface a legacy authentication cookie finding"
     headRef: "WORKTREE",
     scanMode: "changed",
     changedFiles: [path],
+    changedRanges: [],
     worktree: true,
   };
 
@@ -204,6 +210,7 @@ test("a newly added file remains eligible in full", async () => {
     headRef: "WORKTREE",
     scanMode: "changed",
     changedFiles: [path],
+    changedRanges: [],
     worktree: true,
   };
 
